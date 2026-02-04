@@ -1,0 +1,170 @@
+@import "tailwindcss";
+
+@theme {
+  /* Colors */
+  --color-background: oklch(13.7% 0.02 265);
+  --color-foreground: oklch(95% 0.02 265);
+  
+  --color-card: oklch(17% 0.025 265);
+  --color-card-foreground: oklch(95% 0.02 265);
+  
+  --color-popover: oklch(17% 0.025 265);
+  --color-popover-foreground: oklch(95% 0.02 265);
+  
+  --color-primary: oklch(70% 0.15 250);
+  --color-primary-foreground: oklch(10% 0.02 265);
+  
+  --color-secondary: oklch(25% 0.03 265);
+  --color-secondary-foreground: oklch(95% 0.02 265);
+  
+  --color-muted: oklch(25% 0.03 265);
+  --color-muted-foreground: oklch(70% 0.02 265);
+  
+  --color-accent: oklch(25% 0.03 265);
+  --color-accent-foreground: oklch(95% 0.02 265);
+  
+  --color-destructive: oklch(55% 0.2 25);
+  --color-destructive-foreground: oklch(95% 0.02 265);
+  
+  --color-border: oklch(30% 0.04 265);
+  --color-input: oklch(30% 0.04 265);
+  --color-ring: oklch(70% 0.15 250);
+  
+  /* Radius */
+  --radius: 0.625rem;
+  
+  /* Fonts */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
+}
+
+/* Light theme override */
+@media (prefers-color-scheme: light) {
+  @theme {
+    --color-background: oklch(100% 0 0);
+    --color-foreground: oklch(15% 0.02 265);
+    
+    --color-card: oklch(100% 0 0);
+    --color-card-foreground: oklch(15% 0.02 265);
+    
+    --color-popover: oklch(100% 0 0);
+    --color-popover-foreground: oklch(15% 0.02 265);
+    
+    --color-primary: oklch(55% 0.2 250);
+    --color-primary-foreground: oklch(100% 0 0);
+    
+    --color-secondary: oklch(96% 0.01 265);
+    --color-secondary-foreground: oklch(20% 0.02 265);
+    
+    --color-muted: oklch(96% 0.01 265);
+    --color-muted-foreground: oklch(50% 0.02 265);
+    
+    --color-accent: oklch(96% 0.01 265);
+    --color-accent-foreground: oklch(20% 0.02 265);
+    
+    --color-destructive: oklch(55% 0.25 25);
+    --color-destructive-foreground: oklch(100% 0 0);
+    
+    --color-border: oklch(90% 0.01 265);
+    --color-input: oklch(90% 0.01 265);
+    --color-ring: oklch(55% 0.2 250);
+  }
+}
+
+/* Dark mode class override for manual toggle */
+.dark {
+  --color-background: oklch(13.7% 0.02 265);
+  --color-foreground: oklch(95% 0.02 265);
+  
+  --color-card: oklch(17% 0.025 265);
+  --color-card-foreground: oklch(95% 0.02 265);
+  
+  --color-popover: oklch(17% 0.025 265);
+  --color-popover-foreground: oklch(95% 0.02 265);
+  
+  --color-primary: oklch(70% 0.15 250);
+  --color-primary-foreground: oklch(10% 0.02 265);
+  
+  --color-secondary: oklch(25% 0.03 265);
+  --color-secondary-foreground: oklch(95% 0.02 265);
+  
+  --color-muted: oklch(25% 0.03 265);
+  --color-muted-foreground: oklch(70% 0.02 265);
+  
+  --color-accent: oklch(25% 0.03 265);
+  --color-accent-foreground: oklch(95% 0.02 265);
+  
+  --color-destructive: oklch(55% 0.2 25);
+  --color-destructive-foreground: oklch(95% 0.02 265);
+  
+  --color-border: oklch(30% 0.04 265);
+  --color-input: oklch(30% 0.04 265);
+  --color-ring: oklch(70% 0.15 250);
+}
+
+.light {
+  --color-background: oklch(100% 0 0);
+  --color-foreground: oklch(15% 0.02 265);
+  
+  --color-card: oklch(100% 0 0);
+  --color-card-foreground: oklch(15% 0.02 265);
+  
+  --color-popover: oklch(100% 0 0);
+  --color-popover-foreground: oklch(15% 0.02 265);
+  
+  --color-primary: oklch(55% 0.2 250);
+  --color-primary-foreground: oklch(100% 0 0);
+  
+  --color-secondary: oklch(96% 0.01 265);
+  --color-secondary-foreground: oklch(20% 0.02 265);
+  
+  --color-muted: oklch(96% 0.01 265);
+  --color-muted-foreground: oklch(50% 0.02 265);
+  
+  --color-accent: oklch(96% 0.01 265);
+  --color-accent-foreground: oklch(20% 0.02 265);
+  
+  --color-destructive: oklch(55% 0.25 25);
+  --color-destructive-foreground: oklch(100% 0 0);
+  
+  --color-border: oklch(90% 0.01 265);
+  --color-input: oklch(90% 0.01 265);
+  --color-ring: oklch(55% 0.2 250);
+}
+
+/* Base styles */
+* {
+  @apply border-border;
+}
+
+body {
+  @apply bg-background text-foreground font-sans antialiased;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-muted/50 rounded;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-border rounded hover:bg-muted-foreground/30;
+}
+
+/* Animations */
+@keyframes pulse-slow {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-pulse-slow {
+  animation: pulse-slow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}

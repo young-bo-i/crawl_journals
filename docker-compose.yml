@@ -1,0 +1,47 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: crawl_journals_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123}
+      MYSQL_DATABASE: crawl_journals
+      MYSQL_CHARACTER_SET_SERVER: utf8mb4
+      MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --max_connections=200
+
+  app:
+    build: .
+    container_name: crawl_journals_app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=mysql://root:${MYSQL_ROOT_PASSWORD:-root123}@mysql:3306/crawl_journals
+      - TZ=Asia/Shanghai
+      - CROSSREF_MAILTO=${CROSSREF_MAILTO:-}
+      - NCBI_EMAIL=${NCBI_EMAIL:-}
+      - NCBI_API_KEY=${NCBI_API_KEY:-}
+      - NCBI_TOOL=${NCBI_TOOL:-crawl_journals}
+      - DOAJ_API_KEY=${DOAJ_API_KEY:-}
+      - WIKIDATA_ENDPOINT=${WIKIDATA_ENDPOINT:-https://query.wikidata.org/sparql}
+      - DEFAULT_TTL_HOURS=${DEFAULT_TTL_HOURS:-168}
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  mysql_data:
+    name: crawl_journals_mysql_data
