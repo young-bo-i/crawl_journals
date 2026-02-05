@@ -4,24 +4,20 @@
  */
 
 export const fieldDict = [
-  // 基础信息
+  // 基础信息（ID、ISSN）
   { key: "id", label: "OpenAlex ID", desc: "OpenAlex 平台的唯一标识符（如 S4210228046）", category: "basic" },
   { key: "issn_l", label: "ISSN-L", desc: "链接 ISSN（Linking ISSN）", category: "basic" },
   { key: "issns", label: "ISSN 列表", desc: "所有关联的 ISSN（JSON 数组）", category: "basic" },
-  { key: "title", label: "标题", desc: "聚合后的期刊标题（DOAJ > Crossref > OpenAlex）", category: "basic" },
-  { key: "publisher", label: "出版社", desc: "聚合后的出版社名称（Crossref > DOAJ > OpenAlex）", category: "basic" },
-  { key: "country", label: "国家/地区", desc: "期刊所属国家/地区代码", category: "basic" },
-  { key: "languages", label: "语种", desc: "期刊语种列表（JSON 数组）", category: "basic" },
-  { key: "subjects", label: "学科", desc: "学科/主题分类（JSON 数组）", category: "basic" },
-  { key: "is_open_access", label: "开放获取", desc: "是否为开放获取期刊", category: "basic" },
-  { key: "homepage", label: "主页", desc: "期刊官网 URL", category: "basic" },
 
-  // OpenAlex 数据
-  { key: "oa_display_name", label: "OA显示名称", desc: "OpenAlex 中的期刊显示名称", category: "openalex" },
-  { key: "oa_type", label: "OA类型", desc: "期刊类型（journal/repository等）", category: "openalex" },
+  // OpenAlex 数据（基础数据来源）
+  { key: "oa_display_name", label: "期刊名称", desc: "OpenAlex 中的期刊显示名称", category: "openalex" },
+  { key: "oa_type", label: "类型", desc: "期刊类型（journal/repository等）", category: "openalex" },
   { key: "oa_alternate_titles", label: "备选标题", desc: "期刊备选名称列表（JSON 数组）", category: "openalex" },
-  { key: "oa_host_organization", label: "宿主组织", desc: "出版商/宿主组织名称", category: "openalex" },
+  { key: "oa_host_organization", label: "出版机构", desc: "出版商/宿主组织名称", category: "openalex" },
+  { key: "oa_host_organization_id", label: "出版机构ID", desc: "出版商/宿主组织 OpenAlex ID", category: "openalex" },
   { key: "oa_host_organization_lineage", label: "组织层级", desc: "宿主组织的层级结构（JSON 数组）", category: "openalex" },
+  { key: "oa_country_code", label: "国家/地区", desc: "国家/地区代码", category: "openalex" },
+  { key: "oa_homepage_url", label: "主页", desc: "期刊官网 URL", category: "openalex" },
   { key: "oa_works_count", label: "作品数", desc: "OpenAlex 收录的作品总数", category: "openalex" },
   { key: "oa_cited_by_count", label: "被引数", desc: "被引用总次数", category: "openalex" },
   { key: "oa_works_api_url", label: "作品API", desc: "获取该期刊作品的 API 地址", category: "openalex" },
@@ -111,7 +107,6 @@ export const fieldDict = [
   { key: "wikipedia_infobox", label: "Wiki信息框", desc: "Wikipedia 信息框数据（JSON 对象）", category: "wikipedia" },
 
   // 元信息
-  { key: "field_sources", label: "字段来源", desc: "各聚合字段的数据来源（JSON 对象）", category: "meta" },
   { key: "created_at", label: "创建时间", desc: "记录创建时间", category: "meta" },
   { key: "updated_at", label: "更新时间", desc: "记录最后更新时间", category: "meta" },
 ] as const;

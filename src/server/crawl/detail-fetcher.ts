@@ -219,7 +219,7 @@ export async function fetchDetails(args: {
     const sourceResults: Partial<Record<SourceName, { status: FetchStatusType; httpStatus: number | null; bodyText: string | null }>> = {};
 
     // 获取标题（从已保存的 OpenAlex 数据中获取）
-    const journalTitle: string | null = existingJournal?.oa_display_name ?? existingJournal?.title ?? null;
+    const journalTitle: string | null = existingJournal?.oa_display_name ?? null;
 
     // Crossref 抓取任务（需要 ISSN）
     const fetchCrossrefTask = () => limiters.crossref!.schedule(async () => {

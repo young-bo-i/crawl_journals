@@ -163,7 +163,7 @@ export function JournalDetailSheet({ journalId, open, onOpenChange }: JournalDet
         <SheetHeader className="px-6 py-4 border-b">
           <SheetTitle className="text-lg">期刊详情</SheetTitle>
           <SheetDescription className="line-clamp-1">
-            {j?.title ? String(j.title) : journalId}
+            {j?.oa_display_name ? String(j.oa_display_name) : journalId}
           </SheetDescription>
         </SheetHeader>
 
@@ -204,7 +204,7 @@ export function JournalDetailSheet({ journalId, open, onOpenChange }: JournalDet
                       <Globe className="h-3 w-3" />
                       OA
                     </div>
-                    <BoolBadge value={j.is_open_access} />
+                    <BoolBadge value={j.oa_is_oa} />
                   </div>
                   <div className="rounded-lg border p-3">
                     <div className="flex items-center gap-1 text-xs text-muted-foreground mb-1">
@@ -236,27 +236,24 @@ export function JournalDetailSheet({ journalId, open, onOpenChange }: JournalDet
 
                 <Separator />
 
-                {/* Basic Info */}
+                {/* Basic Info (ID & ISSN) */}
                 <Section title="基本信息" icon={Database}>
                   <InfoRow label="OpenAlex ID" value={j.id} />
                   <InfoRow label="ISSN-L" value={j.issn_l} />
                   <InfoRow label="ISSNs" value={j.issns} />
-                  <InfoRow label="标题" value={j.title} />
-                  <InfoRow label="出版社" value={j.publisher} />
-                  <InfoRow label="国家/地区" value={j.country} />
-                  <InfoRow label="语言" value={j.languages} />
-                  <InfoRow label="主页" value={j.homepage} />
-                  <InfoRow label="主题/学科" value={j.subjects} />
                 </Section>
 
                 <Separator />
 
-                {/* OpenAlex Data */}
-                <Section title="OpenAlex 数据" icon={BarChart3}>
-                  <InfoRow label="显示名称" value={j.oa_display_name} />
+                {/* OpenAlex Data (Primary Data Source) */}
+                <Section title="OpenAlex 数据（基础数据）" icon={BarChart3}>
+                  <InfoRow label="期刊名称" value={j.oa_display_name} highlight />
                   <InfoRow label="类型" value={j.oa_type} />
                   <InfoRow label="别名" value={j.oa_alternate_titles} />
-                  <InfoRow label="主办机构" value={j.oa_host_organization} />
+                  <InfoRow label="出版机构" value={j.oa_host_organization} highlight />
+                  <InfoRow label="出版机构 ID" value={j.oa_host_organization_id} />
+                  <InfoRow label="国家/地区" value={j.oa_country_code} highlight />
+                  <InfoRow label="主页" value={j.oa_homepage_url} />
                   <InfoRow label="作品数" value={j.oa_works_count} />
                   <InfoRow label="被引数" value={j.oa_cited_by_count} />
                   <InfoRow label="OA 作品数" value={j.oa_oa_works_count} />
@@ -272,8 +269,8 @@ export function JournalDetailSheet({ journalId, open, onOpenChange }: JournalDet
                   <InfoRow label="主题分布" value={j.oa_topics} />
                   <InfoRow label="各年引用" value={j.oa_counts_by_year} />
                   <InfoRow label="外部 ID" value={j.oa_ids} />
-                  <InfoRow label="OA 创建日期" value={j.oa_created_date} />
-                  <InfoRow label="OA 更新日期" value={j.oa_updated_date} />
+                  <InfoRow label="创建日期" value={j.oa_created_date} />
+                  <InfoRow label="更新日期" value={j.oa_updated_date} />
                 </Section>
 
                 <Separator />

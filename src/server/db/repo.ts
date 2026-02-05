@@ -41,20 +41,16 @@ export type JournalRow = {
   id: string;
   issn_l: string | null;
   issns: string[] | null;
-  title: string | null;
-  publisher: string | null;
-  country: string | null;
-  languages: string[] | null;
-  subjects: string[] | null;
-  is_open_access: boolean | null;
-  homepage: string | null;
   
-  // OpenAlex 字段
+  // OpenAlex 字段（基础数据）
   oa_display_name: string | null;
   oa_type: string | null;
   oa_alternate_titles: string[] | null;
   oa_host_organization: string | null;
+  oa_host_organization_id: string | null;
   oa_host_organization_lineage: any[] | null;
+  oa_country_code: string | null;
+  oa_homepage_url: string | null;
   oa_works_count: number | null;
   oa_cited_by_count: number | null;
   oa_works_api_url: string | null;
@@ -158,7 +154,6 @@ export type JournalRow = {
   custom_updated_at: string | null;
   
   // 元信息
-  field_sources: Record<string, SourceName> | null;
   created_at: string;
   updated_at: string;
 };
@@ -166,8 +161,9 @@ export type JournalRow = {
 // 期刊表所有字段（不包含 BLOB 字段 cover_image）
 // 用于 SELECT 查询，避免 BLOB 数据导致的问题
 const JOURNAL_SELECT_FIELDS = `
-  id, issn_l, issns, title, publisher, country, languages, subjects, is_open_access, homepage,
-  oa_display_name, oa_type, oa_alternate_titles, oa_host_organization, oa_host_organization_lineage,
+  id, issn_l, issns,
+  oa_display_name, oa_type, oa_alternate_titles, oa_host_organization, oa_host_organization_id,
+  oa_host_organization_lineage, oa_country_code, oa_homepage_url,
   oa_works_count, oa_cited_by_count, oa_works_api_url, oa_apc_prices, oa_apc_usd, oa_counts_by_year,
   oa_first_publication_year, oa_last_publication_year, oa_is_core, oa_is_oa, oa_is_high_oa_rate,
   oa_is_high_oa_rate_since_year, oa_is_in_doaj, oa_is_in_doaj_since_year, oa_is_in_scielo, oa_is_ojs,
@@ -187,7 +183,7 @@ const JOURNAL_SELECT_FIELDS = `
   wikipedia_thumbnail, wikipedia_categories, wikipedia_infobox,
   cover_image_type, cover_image_name,
   custom_title, custom_publisher, custom_country, custom_homepage, custom_description, custom_notes, custom_updated_at,
-  field_sources, created_at, updated_at
+  created_at, updated_at
 `.replace(/\s+/g, " ").trim();
 
 export type CrawlRunRow = {
@@ -682,7 +678,7 @@ export async function getFetchStatsBySource(): Promise<SourceStats[]> {
 
 // 可排序字段
 export type SortField = 
-  | "id" | "issn_l" | "title" | "publisher" | "country"
+  | "id" | "issn_l" | "oa_display_name" | "oa_host_organization" | "oa_country_code"
   | "oa_works_count" | "oa_cited_by_count" | "oa_apc_usd"
   | "oa_first_publication_year" | "oa_last_publication_year"
   | "oa_oa_works_count" | "oa_created_date" | "oa_updated_date"
@@ -768,7 +764,7 @@ export async function queryJournals(args: QueryJournalsArgs): Promise<{ total: n
   
   // 字符串筛选
   if (args.country) {
-    where.push("country = ?");
+    where.push("oa_country_code = ?");
     params.push(args.country);
   }
   

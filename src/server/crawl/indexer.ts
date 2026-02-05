@@ -15,17 +15,25 @@ export function extractOpenAlex(bodyText: string | null): Partial<JournalRow> {
   // 提取 ISSN 列表
   const issns = Array.isArray(json.issn) ? json.issn.filter((i: any) => typeof i === "string") : null;
   
+  // 提取 host_organization ID
+  const hostOrgId = json.host_organization 
+    ? String(json.host_organization).replace("https://openalex.org/", "") 
+    : null;
+  
   return {
     id,
     issn_l: json.issn_l ?? null,
     issns,
     
-    // OpenAlex 字段（带 oa_ 前缀）
+    // OpenAlex 字段（带 oa_ 前缀，这就是基础数据）
     oa_display_name: json.display_name ?? null,
     oa_type: json.type ?? null,
     oa_alternate_titles: Array.isArray(json.alternate_titles) ? json.alternate_titles : null,
-    oa_host_organization: json.host_organization_name ?? json.publisher ?? null,
+    oa_host_organization: json.host_organization_name ?? null,
+    oa_host_organization_id: hostOrgId,
     oa_host_organization_lineage: Array.isArray(json.host_organization_lineage) ? json.host_organization_lineage : null,
+    oa_country_code: json.country_code ?? null,
+    oa_homepage_url: json.homepage_url ?? null,
     oa_works_count: typeof json.works_count === "number" ? json.works_count : null,
     oa_cited_by_count: typeof json.cited_by_count === "number" ? json.cited_by_count : null,
     oa_works_api_url: json.works_api_url ?? null,
@@ -173,7 +181,8 @@ export function extractWikipedia(bodyText: string | null): Partial<JournalRow> &
 }
 
 /**
- * 合并各数据源的数据，生成聚合后的期刊数据
+ * 合并各数据源的数据
+ * 注意：OpenAlex 数据即为基础数据，不再聚合到单独的 title/publisher 等字段
  * @param args.existing - 已有的期刊数据（包含 OpenAlex 数据，用于流水线模式）
  * @param args.openalex - OpenAlex 数据（用于非流水线模式）
  */
@@ -186,81 +195,10 @@ export function mergeJournalData(args: {
   wikidata?: Partial<JournalRow> & { hasWikidata?: boolean };
   wikipedia?: Partial<JournalRow> & { hasWikipedia?: boolean };
 }): Partial<JournalRow> {
-  const fieldSources: Record<string, SourceName> = {};
-  
   // 使用 existing 或 openalex 作为基础数据
   const baseData = args.existing ?? args.openalex;
   
-  // 辅助函数：从多个候选值中选择第一个有效值
-  function pick<T>(candidates: Array<{ v: T | null | undefined; s: SourceName }>): { v: T | null; s?: SourceName } {
-    for (const c of candidates) {
-      if (c.v === null || c.v === undefined) continue;
-      if (typeof c.v === "string" && c.v.trim() === "") continue;
-      return { v: c.v as T, s: c.s };
-    }
-    return { v: null };
-  }
-  
-  // 合并字符串数组并去重
-  function uniqStrings(items: Array<string | null | undefined>): string[] {
-    const set = new Set<string>();
-    for (const it of items) {
-      if (!it) continue;
-      const v = String(it).trim();
-      if (!v) continue;
-      set.add(v);
-    }
-    return Array.from(set);
-  }
-  
-  // 聚合核心字段
-  const title = pick<string>([
-    { v: args.doaj?.doaj_title ?? null, s: "doaj" },
-    { v: args.crossref?.cr_title ?? null, s: "crossref" },
-    { v: baseData?.oa_display_name ?? null, s: "openalex" },
-  ]);
-  if (title.s) fieldSources.title = title.s;
-  
-  const publisher = pick<string>([
-    { v: args.crossref?.cr_publisher ?? null, s: "crossref" },
-    { v: args.doaj?.doaj_publisher ?? null, s: "doaj" },
-    { v: baseData?.oa_host_organization ?? null, s: "openalex" },
-  ]);
-  if (publisher.s) fieldSources.publisher = publisher.s;
-  
-  const country = pick<string>([
-    { v: args.doaj?.doaj_country ?? null, s: "doaj" },
-  ]);
-  if (country.s) fieldSources.country = country.s;
-  
-  const homepage = pick<string>([
-    { v: (args.doaj?.doaj_links as any[])?.find((l: any) => l?.type === "homepage")?.url ?? null, s: "doaj" },
-    { v: args.wikidata?.wikidata_homepage ?? null, s: "wikidata" },
-  ]);
-  if (homepage.s) fieldSources.homepage = homepage.s;
-  
-  // 合并语言
-  const languages = uniqStrings([
-    ...(args.doaj?.doaj_languages ?? []),
-  ]);
-  if (languages.length > 0) fieldSources.languages = "doaj";
-  
-  // 合并学科/主题
-  const doajSubjects = (args.doaj?.doaj_subjects as any[])?.map((s: any) => s?.term).filter(Boolean) ?? [];
-  const crSubjects = args.crossref?.cr_subjects ?? [];
-  const subjects = uniqStrings([...doajSubjects, ...(crSubjects as string[])]);
-  if (subjects.length > 0) {
-    fieldSources.subjects = doajSubjects.length > 0 ? "doaj" : "crossref";
-  }
-  
-  // OA 状态
-  const isOpenAccess = pick<boolean>([
-    { v: args.doaj?.inDoaj === true ? true : null, s: "doaj" },
-    { v: baseData?.oa_is_oa ?? null, s: "openalex" },
-  ]);
-  if (isOpenAccess.s) fieldSources.is_open_access = isOpenAccess.s;
-  
-  // 合并结果（保留已有的 OpenAlex 字段）
+  // 合并结果（OpenAlex 字段就是基础数据，其他数据源各自保留原始字段）
   const result: Partial<JournalRow> = {
     // 从已有数据获取 OpenAlex 基础信息
     ...baseData,
@@ -277,15 +215,6 @@ export function mergeJournalData(args: {
     // 从 Wikipedia 获取信息
     ...args.wikipedia,
     
-    // 聚合后的核心字段
-    title: title.v,
-    publisher: publisher.v,
-    country: country.v,
-    homepage: homepage.v,
-    languages: languages.length > 0 ? languages : null,
-    subjects: subjects.length > 0 ? subjects : null,
-    is_open_access: isOpenAccess.v,
-    
     // NLM 状态
     nlm_in_catalog: args.nlm?.inNlm ?? false,
     nlm_uids: args.nlm?.uids?.length ? args.nlm.uids : null,
@@ -295,9 +224,6 @@ export function mergeJournalData(args: {
     
     // Wikipedia 状态
     wikipedia_has_article: args.wikipedia?.hasWikipedia ?? false,
-    
-    // 字段来源记录
-    field_sources: Object.keys(fieldSources).length > 0 ? fieldSources : null,
   };
   
   // 删除临时字段

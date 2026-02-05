@@ -6,9 +6,9 @@
 export type ColumnType = "string" | "number" | "boolean" | "date" | "json" | "url" | "text";
 
 export type ColumnCategory = 
-  | "basic"      // 基础信息（聚合后的核心字段）
+  | "basic"      // 基础信息（ID、ISSN）
   | "custom"     // 用户自定义字段
-  | "openalex"   // OpenAlex 数据
+  | "openalex"   // OpenAlex 数据（基础数据来源）
   | "crossref"   // Crossref 数据
   | "doaj"       // DOAJ 数据
   | "nlm"        // NLM 数据
@@ -44,27 +44,23 @@ export const CATEGORY_LABELS: Record<ColumnCategory, string> = {
 // 所有可用列定义（基于 indexer.ts 中的字段提取）
 export const ALL_COLUMNS: ColumnDef[] = [
   // =============================================
-  // 基础信息（聚合后的核心字段）
+  // 基础信息（ID、ISSN）
   // =============================================
   { key: "id", label: "OpenAlex ID", category: "basic", type: "string", sortable: true, defaultVisible: true, width: 140, description: "OpenAlex 平台唯一标识符" },
   { key: "issn_l", label: "ISSN-L", category: "basic", type: "string", sortable: true, defaultVisible: true, width: 100, description: "链接 ISSN" },
   { key: "issns", label: "ISSN 列表", category: "basic", type: "json", width: 150, description: "所有关联的 ISSN" },
-  { key: "title", label: "标题", category: "basic", type: "string", sortable: true, defaultVisible: true, width: 250, description: "聚合后的期刊标题（DOAJ > Crossref > OpenAlex）" },
-  { key: "publisher", label: "出版社", category: "basic", type: "string", sortable: true, defaultVisible: true, width: 180, description: "聚合后的出版社（Crossref > DOAJ > OpenAlex）" },
-  { key: "country", label: "国家/地区", category: "basic", type: "string", sortable: true, filterable: true, defaultVisible: true, width: 80, description: "国家/地区代码" },
-  { key: "languages", label: "语种", category: "basic", type: "json", width: 100, description: "期刊语种列表" },
-  { key: "subjects", label: "学科", category: "basic", type: "json", width: 200, description: "学科/主题分类" },
-  { key: "is_open_access", label: "开放获取", category: "basic", type: "boolean", filterable: true, defaultVisible: true, width: 80, description: "是否为开放获取" },
-  { key: "homepage", label: "主页", category: "basic", type: "url", width: 200, description: "期刊官网 URL" },
 
   // =============================================
-  // OpenAlex 数据（oa_ 前缀）
+  // OpenAlex 数据（oa_ 前缀）- 基础数据来源
   // =============================================
-  { key: "oa_display_name", label: "OA显示名称", category: "openalex", type: "string", width: 200, description: "OpenAlex 中的期刊显示名称" },
-  { key: "oa_type", label: "OA类型", category: "openalex", type: "string", filterable: true, width: 100, description: "期刊类型（journal/repository等）" },
+  { key: "oa_display_name", label: "期刊名称", category: "openalex", type: "string", sortable: true, defaultVisible: true, width: 250, description: "OpenAlex 中的期刊显示名称" },
+  { key: "oa_type", label: "类型", category: "openalex", type: "string", filterable: true, width: 100, description: "期刊类型（journal/repository等）" },
   { key: "oa_alternate_titles", label: "备选标题", category: "openalex", type: "json", width: 200, description: "期刊备选名称列表" },
-  { key: "oa_host_organization", label: "宿主组织", category: "openalex", type: "string", width: 180, description: "出版商/宿主组织名称" },
+  { key: "oa_host_organization", label: "出版机构", category: "openalex", type: "string", sortable: true, defaultVisible: true, width: 180, description: "出版商/宿主组织名称" },
+  { key: "oa_host_organization_id", label: "出版机构ID", category: "openalex", type: "string", width: 140, description: "出版商/宿主组织 OpenAlex ID" },
   { key: "oa_host_organization_lineage", label: "组织层级", category: "openalex", type: "json", width: 200, description: "宿主组织的层级结构" },
+  { key: "oa_country_code", label: "国家/地区", category: "openalex", type: "string", sortable: true, filterable: true, defaultVisible: true, width: 80, description: "国家/地区代码" },
+  { key: "oa_homepage_url", label: "主页", category: "openalex", type: "url", width: 200, description: "期刊官网 URL" },
   { key: "oa_works_count", label: "作品数", category: "openalex", type: "number", sortable: true, defaultVisible: true, width: 100, description: "OpenAlex 收录的作品总数" },
   { key: "oa_cited_by_count", label: "被引数", category: "openalex", type: "number", sortable: true, defaultVisible: true, width: 100, description: "被引用总次数" },
   { key: "oa_works_api_url", label: "作品API", category: "openalex", type: "url", width: 200, description: "获取该期刊作品的 API 地址" },
@@ -178,7 +174,6 @@ export const ALL_COLUMNS: ColumnDef[] = [
   // =============================================
   // 元信息
   // =============================================
-  { key: "field_sources", label: "字段来源", category: "meta", type: "json", width: 200, description: "各聚合字段的数据来源" },
   { key: "created_at", label: "创建时间", category: "meta", type: "date", sortable: true, width: 160, description: "记录创建时间" },
   { key: "updated_at", label: "更新时间", category: "meta", type: "date", sortable: true, defaultVisible: true, width: 160, description: "记录最后更新时间" },
 ];

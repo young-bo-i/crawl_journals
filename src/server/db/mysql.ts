@@ -163,12 +163,13 @@ export async function runMigrations(): Promise<void> {
           await conn.query(stmt);
           executed++;
         } catch (err: any) {
-          // 幂等性：忽略"已存在"类错误
+          // 幂等性：忽略"已存在"或"不存在"类错误
           const ignorableErrors = [
             1050, // Table already exists
             1060, // Duplicate column name
             1061, // Duplicate key name (索引已存在)
             1068, // Multiple primary key defined
+            1091, // Can't DROP column/key that doesn't exist
           ];
           
           if (ignorableErrors.includes(err?.errno)) {

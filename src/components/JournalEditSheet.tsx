@@ -28,10 +28,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface JournalData {
   id: string;
-  title: string | null;
-  publisher: string | null;
-  country: string | null;
-  homepage: string | null;
+  oa_display_name: string | null;
+  oa_host_organization: string | null;
+  oa_country_code: string | null;
+  oa_homepage_url: string | null;
   custom_title: string | null;
   custom_publisher: string | null;
   custom_country: string | null;
@@ -230,7 +230,7 @@ export function JournalEditSheet({
         <SheetHeader className="px-6 py-4 border-b">
           <SheetTitle className="text-lg">编辑期刊</SheetTitle>
           <SheetDescription className="line-clamp-1">
-            {journal?.title || journalId}
+            {journal?.oa_display_name || journalId}
           </SheetDescription>
         </SheetHeader>
 
@@ -272,15 +272,15 @@ export function JournalEditSheet({
                 <div className="rounded-lg border bg-muted/30 p-4 space-y-2">
                   <h4 className="text-sm font-medium flex items-center gap-2">
                     <Info className="h-4 w-4" />
-                    当前爬取数据
+                    当前爬取数据（OpenAlex）
                   </h4>
                   <div className="text-xs space-y-1 text-muted-foreground">
-                    <p><span className="font-medium">标题:</span> {journal.title || "-"}</p>
-                    <p><span className="font-medium">出版社:</span> {journal.publisher || "-"}</p>
-                    <p><span className="font-medium">国家:</span> {journal.country || "-"}</p>
-                    <p><span className="font-medium">主页:</span> {journal.homepage ? (
-                      <a href={journal.homepage} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
-                        {journal.homepage.slice(0, 50)}{journal.homepage.length > 50 ? "..." : ""}
+                    <p><span className="font-medium">期刊名称:</span> {journal.oa_display_name || "-"}</p>
+                    <p><span className="font-medium">出版机构:</span> {journal.oa_host_organization || "-"}</p>
+                    <p><span className="font-medium">国家:</span> {journal.oa_country_code || "-"}</p>
+                    <p><span className="font-medium">主页:</span> {journal.oa_homepage_url ? (
+                      <a href={journal.oa_homepage_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                        {journal.oa_homepage_url.slice(0, 50)}{journal.oa_homepage_url.length > 50 ? "..." : ""}
                       </a>
                     ) : "-"}</p>
                   </div>
@@ -378,9 +378,9 @@ export function JournalEditSheet({
                       onChange={(e) =>
                         setFormData({ ...formData, custom_title: e.target.value })
                       }
-                      placeholder={journal.title || "输入自定义标题..."}
+                      placeholder={journal.oa_display_name || "输入自定义标题..."}
                     />
-                    <CurrentValue value={journal.title} label="原始标题" />
+                    <CurrentValue value={journal.oa_display_name} label="OpenAlex 标题" />
                   </div>
 
                   {/* Custom Publisher */}
@@ -398,9 +398,9 @@ export function JournalEditSheet({
                       onChange={(e) =>
                         setFormData({ ...formData, custom_publisher: e.target.value })
                       }
-                      placeholder={journal.publisher || "输入自定义出版社..."}
+                      placeholder={journal.oa_host_organization || "输入自定义出版社..."}
                     />
-                    <CurrentValue value={journal.publisher} label="原始出版社" />
+                    <CurrentValue value={journal.oa_host_organization} label="OpenAlex 出版机构" />
                   </div>
 
                   {/* Custom Country */}
@@ -421,10 +421,10 @@ export function JournalEditSheet({
                           custom_country: e.target.value.toUpperCase(),
                         })
                       }
-                      placeholder={journal.country || "如: US, CN, GB..."}
+                      placeholder={journal.oa_country_code || "如: US, CN, GB..."}
                       maxLength={10}
                     />
-                    <CurrentValue value={journal.country} label="原始国家" />
+                    <CurrentValue value={journal.oa_country_code} label="OpenAlex 国家" />
                   </div>
 
                   {/* Custom Homepage */}
@@ -443,9 +443,9 @@ export function JournalEditSheet({
                       onChange={(e) =>
                         setFormData({ ...formData, custom_homepage: e.target.value })
                       }
-                      placeholder={journal.homepage || "https://..."}
+                      placeholder={journal.oa_homepage_url || "https://..."}
                     />
-                    <CurrentValue value={journal.homepage} label="原始主页" />
+                    <CurrentValue value={journal.oa_homepage_url} label="OpenAlex 主页" />
                   </div>
 
                   {/* Custom Description */}

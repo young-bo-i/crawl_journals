@@ -12,7 +12,7 @@ const schema = z.object({
   inNlm: z.coerce.boolean().optional(),
   hasWikidata: z.coerce.boolean().optional(),
   isOpenAccess: z.coerce.boolean().optional(),
-  sortBy: z.enum(["id", "title", "publisher", "country", "oa_works_count", "oa_cited_by_count", "updated_at"]).optional(),
+  sortBy: z.enum(["id", "oa_display_name", "oa_host_organization", "oa_country_code", "oa_works_count", "oa_cited_by_count", "updated_at"]).optional(),
   sortOrder: z.enum(["asc", "desc"]).optional(),
   include: z.enum(["basic", "with_jcr", "full"]).default("basic"),
 });
@@ -47,15 +47,16 @@ export async function GET(req: Request) {
           id: row.id,
           issn_l: row.issn_l,
           issns: row.issns,
-          title: row.title,
-          publisher: row.publisher,
-          country: row.country,
-          languages: row.languages,
-          subjects: row.subjects,
-          is_open_access: row.is_open_access,
-          homepage: row.homepage,
+          // OpenAlex 基础数据
+          title: row.oa_display_name,
+          publisher: row.oa_host_organization,
+          country: row.oa_country_code,
+          homepage: row.oa_homepage_url,
+          type: row.oa_type,
+          // OpenAlex 其他数据
           works_count: row.oa_works_count,
           cited_by_count: row.oa_cited_by_count,
+          is_open_access: row.oa_is_oa,
           in_doaj: row.oa_is_in_doaj,
           in_nlm: row.nlm_in_catalog,
           has_wikidata: row.wikidata_has_entity,
@@ -73,9 +74,9 @@ export async function GET(req: Request) {
         if (row.issn_l) {
           jcrData = await getJcrByIssn(row.issn_l);
           fqbData = await getFqbJcrByIssn(row.issn_l);
-        } else if (row.title) {
-          jcrData = await getJcrByTitle(row.title);
-          fqbData = await getFqbJcrByTitle(row.title);
+        } else if (row.oa_display_name) {
+          jcrData = await getJcrByTitle(row.oa_display_name);
+          fqbData = await getFqbJcrByTitle(row.oa_display_name);
         }
         
         const jcrFormatted = jcrData.map((data: any) => ({

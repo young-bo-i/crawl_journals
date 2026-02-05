@@ -377,13 +377,13 @@ export default function JournalsTable() {
                             >
                               {row.id as string}
                             </button>
-                          ) : col.key === "title" ? (
-                            <span className="line-clamp-1 max-w-[200px]" title={String(row.title || "")}>
-                              {String(row.title || "-")}
+                          ) : col.key === "oa_display_name" ? (
+                            <span className="line-clamp-1 max-w-[200px]" title={String(row.oa_display_name || "")}>
+                              {String(row.oa_display_name || "-")}
                             </span>
-                          ) : col.key === "publisher" ? (
-                            <span className="line-clamp-1 max-w-[150px]" title={String(row.publisher || "")}>
-                              {String(row.publisher || "-")}
+                          ) : col.key === "oa_host_organization" ? (
+                            <span className="line-clamp-1 max-w-[150px]" title={String(row.oa_host_organization || "")}>
+                              {String(row.oa_host_organization || "-")}
                             </span>
                           ) : (
                             formatValue(row[col.key], col.type)

@@ -13,7 +13,7 @@ const schema = z.object({
   inNlm: z.coerce.boolean().optional(),
   hasWikidata: z.coerce.boolean().optional(),
   isOpenAccess: z.coerce.boolean().optional(),
-  sortBy: z.enum(["id", "title", "publisher", "country", "oa_works_count", "oa_cited_by_count", "updated_at"]).optional(),
+  sortBy: z.enum(["id", "oa_display_name", "oa_host_organization", "oa_country_code", "oa_works_count", "oa_cited_by_count", "updated_at"]).optional(),
   sortOrder: z.enum(["asc", "desc"]).optional(),
 });
 
@@ -60,18 +60,15 @@ export async function GET(req: Request) {
   const columns = [
     { header: "OpenAlex ID", key: "id", width: 16 },
     { header: "ISSN-L", key: "issn_l", width: 12 },
-    { header: "期刊标题", key: "title", width: 40 },
-    { header: "标题来源", key: "title_source", width: 15 },
-    { header: "出版社", key: "publisher", width: 28 },
-    { header: "出版社来源", key: "publisher_source", width: 15 },
-    { header: "国家/地区", key: "country", width: 12 },
-    { header: "语种", key: "languages", width: 20 },
-    { header: "学科/主题", key: "subjects", width: 30 },
-    { header: "是否OA", key: "is_open_access", width: 10 },
+    { header: "期刊名称", key: "oa_display_name", width: 40 },
+    { header: "类型", key: "oa_type", width: 12 },
+    { header: "出版机构", key: "oa_host_organization", width: 28 },
+    { header: "国家/地区", key: "oa_country_code", width: 12 },
+    { header: "主页", key: "oa_homepage_url", width: 30 },
+    { header: "是否OA", key: "oa_is_oa", width: 10 },
     { header: "是否被DOAJ收录", key: "oa_is_in_doaj", width: 15 },
     { header: "是否在NLM Catalog", key: "nlm_in_catalog", width: 18 },
     { header: "是否有Wikidata", key: "wikidata_has_entity", width: 15 },
-    { header: "主页/官网", key: "homepage", width: 30 },
     { header: "作品数", key: "oa_works_count", width: 10 },
     { header: "被引数", key: "oa_cited_by_count", width: 10 },
     { header: "更新时间", key: "updated_at", width: 22 },
@@ -86,23 +83,18 @@ export async function GET(req: Request) {
   sheet.getRow(1).font = { bold: true };
 
   for (const row of rowsWithDetails) {
-    const fieldSources = row.field_sources ?? {};
-
     const rowData: Record<string, any> = {
       id: row.id,
       issn_l: row.issn_l ?? "",
-      title: row.title ?? "",
-      title_source: fieldSources.title ?? "",
-      publisher: row.publisher ?? "",
-      publisher_source: fieldSources.publisher ?? "",
-      country: row.country ?? "",
-      languages: (row.languages ?? []).join("; "),
-      subjects: (row.subjects ?? []).join("; "),
-      is_open_access: formatBool(row.is_open_access),
+      oa_display_name: row.oa_display_name ?? "",
+      oa_type: row.oa_type ?? "",
+      oa_host_organization: row.oa_host_organization ?? "",
+      oa_country_code: row.oa_country_code ?? "",
+      oa_homepage_url: row.oa_homepage_url ?? "",
+      oa_is_oa: formatBool(row.oa_is_oa),
       oa_is_in_doaj: formatBool(row.oa_is_in_doaj),
       nlm_in_catalog: formatBool(row.nlm_in_catalog),
       wikidata_has_entity: formatBool(row.wikidata_has_entity),
-      homepage: row.homepage ?? "",
       oa_works_count: row.oa_works_count ?? "",
       oa_cited_by_count: row.oa_cited_by_count ?? "",
       updated_at: row.updated_at,
