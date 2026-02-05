@@ -8,6 +8,7 @@ import {
   Settings,
   FileText,
   Database,
+  TrendingUp,
   Moon,
   Sun,
 } from "lucide-react";
@@ -38,6 +39,11 @@ const navItems = [
     title: "JCR 数据",
     href: "/jcr",
     icon: Database,
+  },
+  {
+    title: "SCImago 数据",
+    href: "/scimago",
+    icon: TrendingUp,
   },
   {
     title: "API 文档",

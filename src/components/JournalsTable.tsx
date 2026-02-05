@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState, useCallback } from "react";
-import Link from "next/link";
 import {
   ChevronLeft,
   ChevronRight,
@@ -12,10 +11,11 @@ import {
   Loader2,
   Check,
   X,
-  Minus,
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Eye,
+  Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -39,11 +39,12 @@ import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { ColumnSelector } from "./ColumnSelector";
 import { JournalFilters, DEFAULT_FILTERS, type JournalFiltersState } from "./JournalFilters";
 import {
-  ALL_COLUMNS,
   DEFAULT_VISIBLE_COLUMNS,
   getColumnDef,
   type ColumnDef,
 } from "@/shared/journal-columns";
+import { JournalDetailSheet } from "./JournalDetailSheet";
+import { JournalEditSheet } from "./JournalEditSheet";
 
 // 格式化函数
 function formatValue(value: unknown, type: ColumnDef["type"]): React.ReactNode {
@@ -135,6 +136,11 @@ export default function JournalsTable() {
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+
+  // Sheet states
+  const [detailSheetOpen, setDetailSheetOpen] = useState(false);
+  const [editSheetOpen, setEditSheetOpen] = useState(false);
+  const [selectedJournalId, setSelectedJournalId] = useState<string | null>(null);
 
   // 从 localStorage 恢复列设置
   useEffect(() => {
@@ -352,7 +358,7 @@ export default function JournalsTable() {
                         )}
                       </TableHead>
                     ))}
-                    <TableHead className="w-20">操作</TableHead>
+                    <TableHead className="w-32">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -361,12 +367,15 @@ export default function JournalsTable() {
                       {visibleColumnDefs.map((col) => (
                         <TableCell key={col.key} className="whitespace-nowrap">
                           {col.key === "id" ? (
-                            <Link
-                              href={`/journals/${encodeURIComponent(row.id as string)}`}
+                            <button
+                              onClick={() => {
+                                setSelectedJournalId(row.id as string);
+                                setDetailSheetOpen(true);
+                              }}
                               className="text-primary hover:underline font-mono text-xs"
                             >
                               {row.id as string}
-                            </Link>
+                            </button>
                           ) : col.key === "title" ? (
                             <span className="line-clamp-1 max-w-[200px]" title={String(row.title || "")}>
                               {String(row.title || "-")}
@@ -381,11 +390,30 @@ export default function JournalsTable() {
                         </TableCell>
                       ))}
                       <TableCell>
-                        <Button variant="ghost" size="sm" asChild>
-                          <Link href={`/journals/${encodeURIComponent(row.id as string)}`}>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setSelectedJournalId(row.id as string);
+                              setDetailSheetOpen(true);
+                            }}
+                          >
+                            <Eye className="mr-1 h-3 w-3" />
                             详情
-                          </Link>
-                        </Button>
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setSelectedJournalId(row.id as string);
+                              setEditSheetOpen(true);
+                            }}
+                          >
+                            <Pencil className="mr-1 h-3 w-3" />
+                            修改
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -477,6 +505,24 @@ export default function JournalsTable() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Detail Sheet */}
+      <JournalDetailSheet
+        journalId={selectedJournalId}
+        open={detailSheetOpen}
+        onOpenChange={setDetailSheetOpen}
+      />
+
+      {/* Edit Sheet */}
+      <JournalEditSheet
+        journalId={selectedJournalId}
+        open={editSheetOpen}
+        onOpenChange={setEditSheetOpen}
+        onSaved={() => {
+          // Refresh the list after saving
+          setAppliedFilters({ ...appliedFilters });
+        }}
+      />
     </div>
   );
 }
