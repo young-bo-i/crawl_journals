@@ -184,6 +184,7 @@ export default function JournalsTable() {
       inScielo: "inScielo",
       isOjs: "isOjs",
       doajBoai: "doajBoai",
+      inScimago: "inScimago",
     };
     
     for (const [key, param] of Object.entries(boolMap)) {
@@ -194,7 +195,7 @@ export default function JournalsTable() {
     
     // 字符串筛选
     if (appliedFilters.country) params.set("country", appliedFilters.country);
-    if (appliedFilters.oaType) params.set("oaType", appliedFilters.oaType);
+    if (appliedFilters.oaType && appliedFilters.oaType !== "all") params.set("oaType", appliedFilters.oaType);
     
     // 数值范围
     if (appliedFilters.minWorksCount) params.set("minWorksCount", appliedFilters.minWorksCount);

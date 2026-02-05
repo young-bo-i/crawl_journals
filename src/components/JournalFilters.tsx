@@ -27,6 +27,7 @@ export interface JournalFiltersState {
   inScielo: string;
   isOjs: string;
   doajBoai: string;
+  inScimago: string; // SCImago 优先期刊
   // 字符串筛选
   country: string;
   oaType: string;
@@ -54,8 +55,9 @@ export const DEFAULT_FILTERS: JournalFiltersState = {
   inScielo: "all",
   isOjs: "all",
   doajBoai: "all",
+  inScimago: "all",
   country: "",
-  oaType: "",
+  oaType: "all",
   minWorksCount: "",
   maxWorksCount: "",
   minCitedByCount: "",
@@ -80,7 +82,7 @@ const BOOL_OPTIONS = [
 ];
 
 const OA_TYPE_OPTIONS = [
-  { value: "", label: "全部类型" },
+  { value: "all", label: "全部类型" },
   { value: "journal", label: "期刊" },
   { value: "repository", label: "仓库" },
   { value: "ebook platform", label: "电子书平台" },
@@ -196,6 +198,19 @@ export function JournalFilters({ filters, onChange, onSearch, loading }: Journal
         {expanded && (
           <div className="mt-4 pt-4 border-t">
             <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+              {/* SCImago 优先期刊筛选 - 放在最前面 */}
+              <div>
+                <label className="text-sm text-muted-foreground mb-1.5 block">优先期刊</label>
+                <Select value={filters.inScimago || "all"} onValueChange={(v) => updateFilter("inScimago", v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部</SelectItem>
+                    <SelectItem value="yes">SCImago 收录</SelectItem>
+                    <SelectItem value="no">非 SCImago</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
               {/* 收录状态筛选 */}
               <div>
                 <label className="text-sm text-muted-foreground mb-1.5 block">DOAJ收录</label>
@@ -295,8 +310,8 @@ export function JournalFilters({ filters, onChange, onSearch, loading }: Journal
 
               <div>
                 <label className="text-sm text-muted-foreground mb-1.5 block">期刊类型</label>
-                <Select value={filters.oaType} onValueChange={(v) => updateFilter("oaType", v)}>
-                  <SelectTrigger><SelectValue placeholder="全部类型" /></SelectTrigger>
+                <Select value={filters.oaType || "all"} onValueChange={(v) => updateFilter("oaType", v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {OA_TYPE_OPTIONS.map((opt) => (
                       <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>

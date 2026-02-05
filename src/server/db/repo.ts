@@ -716,6 +716,7 @@ export type QueryJournalsArgs = {
   inScielo?: boolean;
   isOjs?: boolean;
   doajBoai?: boolean;
+  inScimago?: boolean; // SCImago 优先期刊筛选
   // 字符串筛选
   country?: string;
   oaType?: string;
@@ -800,6 +801,15 @@ export async function queryJournals(args: QueryJournalsArgs): Promise<{ total: n
   if (args.maxFirstYear !== undefined) {
     where.push("oa_first_publication_year <= ?");
     params.push(args.maxFirstYear);
+  }
+
+  // SCImago 优先期刊筛选（通过 issn_l 与 scimago_issn_index 关联）
+  if (args.inScimago !== undefined) {
+    if (args.inScimago) {
+      where.push("EXISTS (SELECT 1 FROM scimago_issn_index si WHERE si.issn = journals.issn_l)");
+    } else {
+      where.push("NOT EXISTS (SELECT 1 FROM scimago_issn_index si WHERE si.issn = journals.issn_l)");
+    }
   }
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";

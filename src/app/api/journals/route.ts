@@ -22,6 +22,7 @@ const schema = z.object({
   inScielo: z.coerce.boolean().optional(),
   isOjs: z.coerce.boolean().optional(),
   doajBoai: z.coerce.boolean().optional(),
+  inScimago: z.coerce.boolean().optional(),
   // 字符串筛选
   country: z.string().optional(),
   oaType: z.string().optional(),
@@ -61,6 +62,7 @@ export async function GET(req: Request) {
     inScielo: params.inScielo,
     isOjs: params.isOjs,
     doajBoai: params.doajBoai,
+    inScimago: params.inScimago,
     // 字符串筛选
     country: params.country,
     oaType: params.oaType,
