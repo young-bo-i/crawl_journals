@@ -9,6 +9,10 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  Trash2,
+  AlertTriangle,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -59,6 +63,7 @@ type ImportResult = {
   inserted: number;
   updated: number;
   errors: number;
+  errorMessages?: string[];
 };
 
 export default function ScimagoPage() {
@@ -73,6 +78,8 @@ export default function ScimagoPage() {
   } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [importResults, setImportResults] = useState<ImportResult[]>([]);
+  const [showErrorDetails, setShowErrorDetails] = useState<Record<number, boolean>>({});
+  const [deleting, setDeleting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 列表相关状态
@@ -148,6 +155,34 @@ export default function ScimagoPage() {
       loadList();
     }
   }, [loadList, scimagoTotal]);
+
+  // 删除所有数据
+  const handleDelete = useCallback(async () => {
+    if (!confirm("确定要删除所有 SCImago 数据吗？此操作不可恢复。")) {
+      return;
+    }
+
+    setDeleting(true);
+    try {
+      const res = await fetch("/api/scimago/delete", { method: "DELETE" });
+      const json = await res.json();
+
+      if (!res.ok) {
+        throw new Error(json.error || "删除失败");
+      }
+
+      // 刷新统计和列表
+      await loadStats();
+      setData([]);
+      setTotal(0);
+      setTotalPages(0);
+      setImportResults([]);
+    } catch (e: any) {
+      setImportError(e.message || "删除失败");
+    } finally {
+      setDeleting(false);
+    }
+  }, [loadStats]);
 
   // 处理文件上传
   const handleUpload = useCallback(async (files: FileList | null) => {
@@ -241,11 +276,26 @@ export default function ScimagoPage() {
           {/* 已导入统计 */}
           {scimagoStats.length > 0 ? (
             <div className="space-y-3">
-              <div className="flex items-center gap-4">
-                <span className="text-sm text-muted-foreground">已导入:</span>
-                <span className="font-medium">{scimagoTotal.toLocaleString()} 条记录</span>
-                <span className="text-muted-foreground">|</span>
-                <span className="font-medium">{scimagoStats.length} 个年份</span>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <span className="text-sm text-muted-foreground">已导入:</span>
+                  <span className="font-medium">{scimagoTotal.toLocaleString()} 条记录</span>
+                  <span className="text-muted-foreground">|</span>
+                  <span className="font-medium">{scimagoStats.length} 个年份</span>
+                </div>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleDelete}
+                  disabled={deleting || importing}
+                >
+                  {deleting ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="mr-2 h-4 w-4" />
+                  )}
+                  删除所有数据
+                </Button>
               </div>
               <div className="flex flex-wrap gap-2">
                 {scimagoStats.map((s) => (
@@ -300,19 +350,69 @@ export default function ScimagoPage() {
 
           {/* 导入结果 */}
           {importResults.length > 0 && (
-            <div className="rounded-lg border bg-muted/50 p-4 space-y-2">
+            <div className="rounded-lg border bg-muted/50 p-4 space-y-3">
               <p className="text-sm font-medium">导入完成</p>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-                {importResults.map((r) => (
-                  <div key={r.filename} className="flex items-center gap-2">
-                    <Badge variant={r.errors > 0 ? "destructive" : "secondary"} className="text-xs">
-                      {r.year}
-                    </Badge>
-                    <span className="text-muted-foreground">
-                      {r.inserted > 0 ? `+${r.inserted}` : ""} 
-                      {r.updated > 0 ? ` ~${r.updated}` : ""}
-                      {r.errors > 0 ? ` !${r.errors}` : ""}
-                    </span>
+              
+              {/* 汇总统计 */}
+              <div className="flex flex-wrap gap-4 text-sm">
+                <span className="text-emerald-600">
+                  新增: {importResults.reduce((sum, r) => sum + r.inserted, 0).toLocaleString()}
+                </span>
+                <span className="text-blue-600">
+                  更新: {importResults.reduce((sum, r) => sum + r.updated, 0).toLocaleString()}
+                </span>
+                {importResults.reduce((sum, r) => sum + r.errors, 0) > 0 && (
+                  <span className="text-destructive">
+                    错误: {importResults.reduce((sum, r) => sum + r.errors, 0).toLocaleString()}
+                  </span>
+                )}
+              </div>
+
+              {/* 各文件详情 */}
+              <div className="space-y-2">
+                {importResults.map((r, idx) => (
+                  <div key={r.filename} className="text-xs">
+                    <div className="flex items-center gap-2">
+                      <Badge variant={r.errors > 0 ? "destructive" : "secondary"} className="text-xs">
+                        {r.year}
+                      </Badge>
+                      <span className="text-muted-foreground">
+                        总行数 {r.totalRows.toLocaleString()} |
+                        新增 {r.inserted.toLocaleString()} |
+                        更新 {r.updated.toLocaleString()}
+                        {r.errors > 0 && ` | 错误 ${r.errors}`}
+                      </span>
+                      {r.errors > 0 && r.errorMessages && r.errorMessages.length > 0 && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-xs"
+                          onClick={() => setShowErrorDetails(prev => ({ ...prev, [idx]: !prev[idx] }))}
+                        >
+                          {showErrorDetails[idx] ? (
+                            <ChevronUp className="h-3 w-3 mr-1" />
+                          ) : (
+                            <ChevronDown className="h-3 w-3 mr-1" />
+                          )}
+                          查看错误
+                        </Button>
+                      )}
+                    </div>
+                    
+                    {/* 错误详情 */}
+                    {showErrorDetails[idx] && r.errorMessages && r.errorMessages.length > 0 && (
+                      <div className="mt-2 ml-4 p-2 rounded bg-destructive/10 border border-destructive/20">
+                        <div className="flex items-center gap-1 text-destructive mb-1">
+                          <AlertTriangle className="h-3 w-3" />
+                          <span className="font-medium">错误详情 (最多显示 10 条):</span>
+                        </div>
+                        <ul className="list-disc list-inside space-y-0.5 text-destructive/80">
+                          {r.errorMessages.map((msg, i) => (
+                            <li key={i}>{msg}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

@@ -466,3 +466,27 @@ export async function getScimagoTotalCount(): Promise<number> {
   );
   return rows[0]?.total ?? 0;
 }
+
+/**
+ * 删除所有 SCImago 数据
+ */
+export async function deleteScimagoData(): Promise<{ deleted: number; indexDeleted: number }> {
+  const pool = await getDb();
+  
+  // 先删除索引表（有外键约束）
+  const [indexResult] = await pool.execute<ResultSetHeader>(
+    `DELETE FROM scimago_issn_index`
+  );
+  
+  // 再删除主表
+  const [mainResult] = await pool.execute<ResultSetHeader>(
+    `DELETE FROM scimago_rankings`
+  );
+  
+  console.log(`[SCImago Delete] 已删除 ${mainResult.affectedRows} 条排名数据, ${indexResult.affectedRows} 条索引数据`);
+  
+  return {
+    deleted: mainResult.affectedRows,
+    indexDeleted: indexResult.affectedRows,
+  };
+}

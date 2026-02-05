@@ -8,12 +8,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { importScimagoFile, extractYearFromFilename } from "@/server/scimago/importer";
 
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};
-
 // 增加超时时间，因为大文件导入可能需要较长时间
 export const maxDuration = 300; // 5 分钟
 
