@@ -16,7 +16,7 @@ export async function POST() {
 
   try {
     await clearAllData();
-    return Response.json({ success: true, message: "已清空所有期刊数据" });
+    return Response.json({ success: true, message: "已清空所有数据" });
   } catch (err: any) {
     return Response.json(
       { error: `清空数据失败: ${err?.message ?? String(err)}` },

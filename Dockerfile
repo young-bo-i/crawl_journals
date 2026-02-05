@@ -21,8 +21,10 @@ COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 # 复制 SQL 脚本目录（供 Node.js 迁移脚本读取）
 COPY --from=builder /app/sql ./sql
+# 复制自定义生产服务器（支持 WebSocket）
+COPY --from=builder /app/server.prod.js ./server.prod.js
 
 EXPOSE 3000
 
-# 迁移会在应用启动时通过 mysql.ts 自动执行
-CMD ["node", "server.js"]
+# 使用自定义服务器启动（支持 WebSocket）
+CMD ["node", "server.prod.js"]

@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "tsx server.ts",
+    "dev:next": "next dev",
     "build": "next build",
     "start": "node .next/standalone/server.js",
     "lint": "next lint",
@@ -38,12 +39,14 @@
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "tailwind-merge": "^3.4.0",
+    "ws": "^8.19.0",
     "zod": "^4.3.5"
   },
   "devDependencies": {
     "@types/node": "^25.0.9",
     "@types/react": "^19.2.8",
     "@types/react-dom": "^19.2.3",
+    "@types/ws": "^8.18.1",
     "autoprefixer": "^10.4.24",
     "eslint": "^9.39.2",
     "eslint-config-next": "^16.1.2",
@@ -51,6 +54,7 @@
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
     "tailwindcss": "^4.1.18",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }
 }

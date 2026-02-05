@@ -1,7 +1,7 @@
 import Bottleneck from "bottleneck";
 import pLimit from "p-limit";
 import {
-  CORE_SOURCES,
+  FETCH_SOURCES,
   type FetchFilter,
   type FetchStatusType,
   type SourceName,
@@ -9,14 +9,18 @@ import {
   bumpRunCounters,
   getCurrentVersion,
   getFetchStatus,
+  getFetchStatsBySource,
   getJournal,
   getJournalIdsForFetch,
   getSourcesForJournal,
+  getPendingJournalCount,
+  getTotalJournalCount,
+  isProducerCompleted,
   updateRun,
+  updateConsumerStatus,
   upsertFetchStatus,
   upsertJournal,
 } from "@/server/db/repo";
-import { fetchOpenAlexDetail, fetchOpenAlexDetailById } from "./sources/openalex";
 import { fetchCrossrefJournal } from "./sources/crossref";
 import { fetchDoajJournalByIssn, fetchDoajJournalByTitle } from "./sources/doaj";
 import { fetchNlmEsearch, fetchNlmEsearchByTitle } from "./sources/nlm";
@@ -25,18 +29,27 @@ import {
   extractCrossref,
   extractDoaj,
   extractNlmEsearch,
-  extractOpenAlex,
   extractWikidata,
   mergeJournalData,
 } from "./indexer";
 import { tryParseJson } from "@/server/util/json";
 import { nowTimestamp } from "@/server/util/time";
 
+export type SourceStats = {
+  source: string;
+  pending: number;
+  success: number;
+  no_data: number;
+  failed: number;
+};
+
 export type FetchEvent =
   | { type: "fetch_progress"; processed: number; total: number; currentJournalId: string; at: number }
   | { type: "fetch_source"; journalId: string; source: SourceName; status: FetchStatusType; httpStatus: number | null; at: number }
   | { type: "fetch_log"; level: "info" | "warn" | "error"; message: string; at: number }
-  | { type: "fetch_done"; processed: number; at: number };
+  | { type: "fetch_done"; processed: number; at: number }
+  | { type: "fetch_waiting"; reason: string; at: number }
+  | { type: "stats_update"; stats: SourceStats[]; totalJournals: number; at: number };
 
 export type FetchParams = {
   concurrency?: number;
@@ -44,6 +57,15 @@ export type FetchParams = {
   filter?: FetchFilter;
   version?: string;
   serialMode?: boolean;
+  /** 流水线模式：等待生产者产生数据 */
+  pipelineMode?: boolean;
+  /** 轮询间隔（毫秒） */
+  pollIntervalMs?: number;
+};
+
+export type FetchResult = {
+  status: "completed" | "stopped";
+  processed: number;
 };
 
 /**
@@ -72,8 +94,6 @@ function hasData(source: SourceName, bodyText: string | null): boolean {
   if (!json) return false;
 
   switch (source) {
-    case "openalex":
-      return Boolean(json.id);
     case "crossref":
       return Boolean(json?.message?.ISSN || json?.message?.title);
     case "doaj":
@@ -92,12 +112,12 @@ export async function fetchDetails(args: {
   params: FetchParams;
   signal: AbortSignal;
   emit: (e: FetchEvent) => void;
-}): Promise<{ processed: number }> {
+}): Promise<FetchResult> {
   const concurrency = Math.max(1, Math.min(100, args.params.concurrency ?? 30));
+  const pollIntervalMs = args.params.pollIntervalMs ?? 5000; // 默认 5 秒轮询
 
-  // QPS 限制
-  const defaultQps: Record<SourceName, number> = {
-    openalex: 10,
+  // QPS 限制（不含 openalex）
+  const defaultQps: Partial<Record<SourceName, number>> = {
     crossref: 8,
     doaj: 8,
     nlm: 10,
@@ -107,19 +127,18 @@ export async function fetchDetails(args: {
   
   const qps = { ...defaultQps, ...(args.params.qps || {}) };
 
-  // 为每个数据源配置独立的并发控制
-  const limiterConfigs: Record<SourceName, { minTime: number; maxConcurrent: number }> = {
-    openalex: { minTime: Math.ceil(1000 / qps.openalex), maxConcurrent: 30 },
-    crossref: { minTime: Math.ceil(1000 / qps.crossref), maxConcurrent: 25 },
-    doaj: { minTime: Math.ceil(1000 / qps.doaj), maxConcurrent: 25 },
-    nlm: { minTime: Math.ceil(1000 / qps.nlm), maxConcurrent: 30 },
-    wikidata: { minTime: Math.ceil(1000 / qps.wikidata), maxConcurrent: 20 },
-    wikipedia: { minTime: Math.ceil(1000 / qps.wikipedia), maxConcurrent: 10 },
+  // 为每个数据源配置独立的并发控制（不含 openalex）
+  const limiterConfigs: Partial<Record<SourceName, { minTime: number; maxConcurrent: number }>> = {
+    crossref: { minTime: Math.ceil(1000 / (qps.crossref ?? 8)), maxConcurrent: 25 },
+    doaj: { minTime: Math.ceil(1000 / (qps.doaj ?? 8)), maxConcurrent: 25 },
+    nlm: { minTime: Math.ceil(1000 / (qps.nlm ?? 10)), maxConcurrent: 30 },
+    wikidata: { minTime: Math.ceil(1000 / (qps.wikidata ?? 5)), maxConcurrent: 20 },
+    wikipedia: { minTime: Math.ceil(1000 / (qps.wikipedia ?? 3)), maxConcurrent: 10 },
   };
 
-  const limiters: Record<SourceName, Bottleneck> = {} as any;
-  for (const source of CORE_SOURCES) {
-    limiters[source] = new Bottleneck(limiterConfigs[source]);
+  const limiters: Partial<Record<SourceName, Bottleneck>> = {};
+  for (const source of FETCH_SOURCES) {
+    limiters[source] = new Bottleneck(limiterConfigs[source]!);
   }
 
   const shouldStop = () => args.signal.aborted;
@@ -134,86 +153,76 @@ export async function fetchDetails(args: {
   const emitLog = (level: "info" | "warn" | "error", message: string) =>
     args.emit({ type: "fetch_log", level, message, at: nowTimestamp() });
 
+  // 统计数据推送（带节流，最多每 500ms 推送一次）
+  let lastStatsEmitTime = 0;
+  const emitStatsUpdate = async () => {
+    const now = Date.now();
+    if (now - lastStatsEmitTime < 500) return; // 节流：最多每 500ms 一次
+    lastStatsEmitTime = now;
+    
+    try {
+      const [stats, totalJournals] = await Promise.all([
+        getFetchStatsBySource(),
+        getTotalJournalCount(),
+      ]);
+      args.emit({
+        type: "stats_update",
+        stats,
+        totalJournals,
+        at: nowTimestamp(),
+      });
+    } catch (e) {
+      // 忽略统计查询错误，不影响主流程
+    }
+  };
+  
+  // 发送 fetch_source 事件并同时推送统计数据
+  const emitFetchSource = async (journalId: string, source: SourceName, status: FetchStatusType, httpStatus: number | null) => {
+    args.emit({ type: "fetch_source", journalId, source, status, httpStatus, at: nowTimestamp() });
+    await emitStatsUpdate();
+  };
+
   // 获取当前版本号
   const version = args.params.version ?? await getCurrentVersion();
 
-  // 获取要处理的期刊 ID 列表
-  const filterWithVersion: FetchFilter = {
-    ...args.params.filter,
-    version: version ?? undefined,
-  };
-  const journalIds = await getJournalIdsForFetch(filterWithVersion);
-  const total = journalIds.length;
+  // 设置消费者状态为 running
+  await updateConsumerStatus(args.runId, "running");
 
   const modeDesc = args.params.serialMode ? "串行模式" : "并行模式";
-  emitLog("info", `开始详情抓取，版本号=${version ?? "无"}，共 ${total} 个期刊，${modeDesc}，并发数 ${concurrency}`);
-  await updateRun(args.runId, { total_journals: total });
+  const pipelineDesc = args.params.pipelineMode ? "（流水线模式）" : "";
+  emitLog("info", `开始详情抓取${pipelineDesc}，版本号=${version ?? "无"}，${modeDesc}，并发数 ${concurrency}`);
 
   let processed = 0;
+  let totalProcessed = 0;
 
   async function processJournal(journalId: string) {
     if (shouldStop()) return;
 
     await updateRun(args.runId, { current_journal_id: journalId });
 
-    // 获取现有期刊数据
+    // 获取现有期刊数据（包含已保存的 OpenAlex 数据）
     const existingJournal = await getJournal(journalId);
     const issn_l = existingJournal?.issn_l;
     const issns = existingJournal?.issns ?? [];
     const primaryIssn = issn_l ?? issns[0] ?? null;
 
-    // 获取需要抓取的数据源
-    const sourcesToFetch = await getSourcesForJournal(journalId, args.params.filter);
+    // 获取需要抓取的数据源（只包含 FETCH_SOURCES 中的 pending 状态）
+    const sourcesToFetch = await getSourcesForJournal(journalId, {
+      ...args.params.filter,
+      sources: FETCH_SOURCES,
+      statuses: ["pending"],
+      version: version ?? undefined,
+    });
     if (sourcesToFetch.length === 0) return;
 
     // 用于存储各数据源的结果
-    const sourceResults: Record<SourceName, { status: FetchStatusType; httpStatus: number | null; bodyText: string | null }> = {} as any;
+    const sourceResults: Partial<Record<SourceName, { status: FetchStatusType; httpStatus: number | null; bodyText: string | null }>> = {};
 
-    // 用于存储标题（供其他数据源使用）
-    let journalTitle: string | null = existingJournal?.oa_display_name ?? existingJournal?.title ?? null;
-
-    // OpenAlex 抓取任务
-    const fetchOpenAlexTask = () => limiters.openalex.schedule(async () => {
-      if (shouldStop()) throw new Error("aborted");
-      try {
-        // 使用 OpenAlex ID 查询
-        const res = await fetchOpenAlexDetailById({ openalexId: journalId, signal: args.signal });
-        const status = determineStatus("openalex", res.status, res.bodyText);
-        
-        await upsertFetchStatus({
-          journalId,
-          source: "openalex",
-          status,
-          httpStatus: res.status,
-          errorMessage: res.ok ? null : `HTTP ${res.status}`,
-          version,
-        });
-        
-        args.emit({ type: "fetch_source", journalId, source: "openalex", status, httpStatus: res.status, at: nowTimestamp() });
-        
-        if (status === "success" && res.bodyText) {
-          const data = tryParseJson<any>(res.bodyText);
-          journalTitle = data?.display_name ?? journalTitle;
-        }
-        
-        return { status, httpStatus: res.status, bodyText: res.bodyText };
-      } catch (e: any) {
-        if (shouldStop() || isAbortError(e)) throw e;
-        await upsertFetchStatus({
-          journalId,
-          source: "openalex",
-          status: "failed",
-          httpStatus: null,
-          errorMessage: e?.message ?? String(e),
-          version,
-        });
-        args.emit({ type: "fetch_source", journalId, source: "openalex", status: "failed", httpStatus: null, at: nowTimestamp() });
-        return { status: "failed" as FetchStatusType, httpStatus: null, bodyText: null };
-      }
-    });
+    // 获取标题（从已保存的 OpenAlex 数据中获取）
+    const journalTitle: string | null = existingJournal?.oa_display_name ?? existingJournal?.title ?? null;
 
     // Crossref 抓取任务（需要 ISSN）
-    const fetchCrossrefTask = () => limiters.crossref.schedule(async () => {
+    const fetchCrossrefTask = () => limiters.crossref!.schedule(async () => {
       if (shouldStop()) throw new Error("aborted");
       
       if (!primaryIssn) {
@@ -225,7 +234,7 @@ export async function fetchDetails(args: {
           errorMessage: "No ISSN available",
           version,
         });
-        args.emit({ type: "fetch_source", journalId, source: "crossref", status: "no_data", httpStatus: null, at: nowTimestamp() });
+        await emitFetchSource(journalId, "crossref", "no_data", null);
         return { status: "no_data" as FetchStatusType, httpStatus: null, bodyText: null };
       }
       
@@ -242,7 +251,7 @@ export async function fetchDetails(args: {
           version,
         });
         
-        args.emit({ type: "fetch_source", journalId, source: "crossref", status, httpStatus: res.status, at: nowTimestamp() });
+        await emitFetchSource(journalId, "crossref", status, res.status);
         return { status, httpStatus: res.status, bodyText: res.bodyText };
       } catch (e: any) {
         if (shouldStop() || isAbortError(e)) throw e;
@@ -254,13 +263,13 @@ export async function fetchDetails(args: {
           errorMessage: e?.message ?? String(e),
           version,
         });
-        args.emit({ type: "fetch_source", journalId, source: "crossref", status: "failed", httpStatus: null, at: nowTimestamp() });
+        await emitFetchSource(journalId, "crossref", "failed", null);
         return { status: "failed" as FetchStatusType, httpStatus: null, bodyText: null };
       }
     });
 
     // DOAJ 抓取任务
-    const fetchDoajTask = () => limiters.doaj.schedule(async () => {
+    const fetchDoajTask = () => limiters.doaj!.schedule(async () => {
       if (shouldStop()) throw new Error("aborted");
       
       try {
@@ -280,7 +289,7 @@ export async function fetchDetails(args: {
             errorMessage: "No ISSN or title available",
             version,
           });
-          args.emit({ type: "fetch_source", journalId, source: "doaj", status: "no_data", httpStatus: null, at: nowTimestamp() });
+          await emitFetchSource(journalId, "doaj", "no_data", null);
           return { status: "no_data" as FetchStatusType, httpStatus: null, bodyText: null };
         }
         
@@ -294,7 +303,7 @@ export async function fetchDetails(args: {
           version,
         });
         
-        args.emit({ type: "fetch_source", journalId, source: "doaj", status, httpStatus: res.status, at: nowTimestamp() });
+        await emitFetchSource(journalId, "doaj", status, res.status);
         return { status, httpStatus: res.status, bodyText: res.bodyText };
       } catch (e: any) {
         if (shouldStop() || isAbortError(e)) throw e;
@@ -306,13 +315,13 @@ export async function fetchDetails(args: {
           errorMessage: e?.message ?? String(e),
           version,
         });
-        args.emit({ type: "fetch_source", journalId, source: "doaj", status: "failed", httpStatus: null, at: nowTimestamp() });
+        await emitFetchSource(journalId, "doaj", "failed", null);
         return { status: "failed" as FetchStatusType, httpStatus: null, bodyText: null };
       }
     });
 
     // NLM 抓取任务
-    const fetchNlmTask = () => limiters.nlm.schedule(async () => {
+    const fetchNlmTask = () => limiters.nlm!.schedule(async () => {
       if (shouldStop()) throw new Error("aborted");
       
       try {
@@ -331,7 +340,7 @@ export async function fetchDetails(args: {
             errorMessage: "No ISSN or title available",
             version,
           });
-          args.emit({ type: "fetch_source", journalId, source: "nlm", status: "no_data", httpStatus: null, at: nowTimestamp() });
+          await emitFetchSource(journalId, "nlm", "no_data", null);
           return { status: "no_data" as FetchStatusType, httpStatus: null, bodyText: null };
         }
         
@@ -345,7 +354,7 @@ export async function fetchDetails(args: {
           version,
         });
         
-        args.emit({ type: "fetch_source", journalId, source: "nlm", status, httpStatus: res.status, at: nowTimestamp() });
+        await emitFetchSource(journalId, "nlm", status, res.status);
         return { status, httpStatus: res.status, bodyText: res.bodyText };
       } catch (e: any) {
         if (shouldStop() || isAbortError(e)) throw e;
@@ -357,13 +366,13 @@ export async function fetchDetails(args: {
           errorMessage: e?.message ?? String(e),
           version,
         });
-        args.emit({ type: "fetch_source", journalId, source: "nlm", status: "failed", httpStatus: null, at: nowTimestamp() });
+        await emitFetchSource(journalId, "nlm", "failed", null);
         return { status: "failed" as FetchStatusType, httpStatus: null, bodyText: null };
       }
     });
 
     // Wikidata 抓取任务
-    const fetchWikidataTask = () => limiters.wikidata.schedule(async () => {
+    const fetchWikidataTask = () => limiters.wikidata!.schedule(async () => {
       if (shouldStop()) throw new Error("aborted");
       
       try {
@@ -382,7 +391,7 @@ export async function fetchDetails(args: {
             errorMessage: "No ISSN or title available",
             version,
           });
-          args.emit({ type: "fetch_source", journalId, source: "wikidata", status: "no_data", httpStatus: null, at: nowTimestamp() });
+          await emitFetchSource(journalId, "wikidata", "no_data", null);
           return { status: "no_data" as FetchStatusType, httpStatus: null, bodyText: null };
         }
         
@@ -396,7 +405,7 @@ export async function fetchDetails(args: {
           version,
         });
         
-        args.emit({ type: "fetch_source", journalId, source: "wikidata", status, httpStatus: res.status, at: nowTimestamp() });
+        await emitFetchSource(journalId, "wikidata", status, res.status);
         return { status, httpStatus: res.status, bodyText: res.bodyText };
       } catch (e: any) {
         if (shouldStop() || isAbortError(e)) throw e;
@@ -408,17 +417,12 @@ export async function fetchDetails(args: {
           errorMessage: e?.message ?? String(e),
           version,
         });
-        args.emit({ type: "fetch_source", journalId, source: "wikidata", status: "failed", httpStatus: null, at: nowTimestamp() });
+        await emitFetchSource(journalId, "wikidata", "failed", null);
         return { status: "failed" as FetchStatusType, httpStatus: null, bodyText: null };
       }
     });
 
-    // 先执行 OpenAlex 获取基础信息
-    if (sourcesToFetch.includes("openalex")) {
-      sourceResults.openalex = await fetchOpenAlexTask();
-    }
-
-    // 并行执行其他数据源
+    // 4 个数据源完全并行执行
     const tasks: Promise<{ status: FetchStatusType; httpStatus: number | null; bodyText: string | null }>[] = [];
     const taskSources: SourceName[] = [];
 
@@ -445,7 +449,7 @@ export async function fetchDetails(args: {
     }
 
     // 从已有数据中补充未抓取的数据源
-    for (const source of CORE_SOURCES) {
+    for (const source of FETCH_SOURCES) {
       if (!sourceResults[source]) {
         const existingStatus = await getFetchStatus(journalId, source);
         sourceResults[source] = {
@@ -457,15 +461,14 @@ export async function fetchDetails(args: {
     }
 
     // 提取各数据源的数据
-    const openalexData = extractOpenAlex(sourceResults.openalex?.bodyText ?? null);
     const crossrefData = extractCrossref(sourceResults.crossref?.bodyText ?? null);
     const doajData = extractDoaj(sourceResults.doaj?.bodyText ?? null);
     const nlmData = extractNlmEsearch(sourceResults.nlm?.bodyText ?? null);
     const wikidataData = extractWikidata(sourceResults.wikidata?.bodyText ?? null);
 
-    // 合并数据
+    // 合并数据（使用已有的 existingJournal 作为 OpenAlex 数据）
     const merged = mergeJournalData({
-      openalex: openalexData,
+      existing: existingJournal ?? undefined,
       crossref: crossrefData,
       doaj: doajData.inDoaj ? doajData : undefined,
       nlm: nlmData,
@@ -478,7 +481,7 @@ export async function fetchDetails(args: {
       ...merged,
     });
 
-    // 计算是否成功
+    // 计算是否成功（只检查 FETCH_SOURCES）
     const allSuccess = Object.values(sourceResults).every(
       (r) => r.status === "success" || r.status === "no_data"
     );
@@ -489,35 +492,123 @@ export async function fetchDetails(args: {
     });
 
     processed += 1;
+    // 注意：total 在流水线模式下可能不准确，因为生产者还在产生数据
     args.emit({
       type: "fetch_progress",
       processed,
-      total,
+      total: totalProcessed + processed, // 使用已知的处理总数
       currentJournalId: journalId,
       at: nowTimestamp(),
     });
+    
+    // 每处理完一个期刊，推送统计数据
+    await emitStatsUpdate();
   }
 
   try {
-    if (args.params.serialMode) {
-      emitLog("info", "使用串行模式处理期刊");
-      for (const journalId of journalIds) {
-        if (shouldStop()) {
-          emitLog("info", "收到停止信号，中断处理");
-          break;
+    // 流水线模式：循环轮询 pending 状态的期刊
+    if (args.params.pipelineMode) {
+      emitLog("info", "流水线模式：等待生产者产生数据...");
+      
+      let consecutiveEmptyPolls = 0;
+      const maxEmptyPolls = 3; // 连续 3 次空轮询后检查生产者状态
+      
+      while (!shouldStop()) {
+        // 获取当前 pending 的期刊
+        const filterWithVersion: FetchFilter = {
+          ...args.params.filter,
+          sources: FETCH_SOURCES,
+          statuses: ["pending"],
+          version: version ?? undefined,
+        };
+        const journalIds = await getJournalIdsForFetch(filterWithVersion);
+        
+        if (journalIds.length === 0) {
+          // 没有待处理的数据
+          const producerDone = await isProducerCompleted(args.runId);
+          
+          if (producerDone) {
+            // 生产者已完成，消费者也完成
+            emitLog("info", "生产者已完成，所有数据处理完毕");
+            break;
+          }
+          
+          consecutiveEmptyPolls++;
+          
+          if (consecutiveEmptyPolls >= maxEmptyPolls) {
+            // 等待生产者产生新数据
+            await updateConsumerStatus(args.runId, "waiting");
+            args.emit({ type: "fetch_waiting", reason: "等待生产者产生新数据", at: nowTimestamp() });
+            emitLog("info", `等待生产者产生新数据，${pollIntervalMs / 1000}s 后重试...`);
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+          continue;
         }
-        await processJournal(journalId);
+        
+        consecutiveEmptyPolls = 0;
+        await updateConsumerStatus(args.runId, "running");
+        
+        // 更新总数
+        await updateRun(args.runId, { total_journals: totalProcessed + journalIds.length });
+        
+        // 处理当前批次
+        if (args.params.serialMode) {
+          for (const journalId of journalIds) {
+            if (shouldStop()) break;
+            await processJournal(journalId);
+          }
+        } else {
+          const limit = pLimit(concurrency);
+          await Promise.allSettled(journalIds.map((id) => limit(() => processJournal(id))));
+        }
+        
+        totalProcessed += processed;
+        processed = 0;
       }
+      
+      processed = totalProcessed;
     } else {
-      emitLog("info", "使用并行模式处理期刊");
-      const limit = pLimit(concurrency);
-      await Promise.allSettled(journalIds.map((id) => limit(() => processJournal(id))));
+      // 非流水线模式：一次性获取所有期刊
+      const filterWithVersion: FetchFilter = {
+        ...args.params.filter,
+        sources: FETCH_SOURCES,
+        version: version ?? undefined,
+      };
+      const journalIds = await getJournalIdsForFetch(filterWithVersion);
+      const total = journalIds.length;
+      
+      emitLog("info", `共 ${total} 个期刊待处理`);
+      await updateRun(args.runId, { total_journals: total });
+      
+      if (args.params.serialMode) {
+        emitLog("info", "使用串行模式处理期刊");
+        for (const journalId of journalIds) {
+          if (shouldStop()) {
+            emitLog("info", "收到停止信号，中断处理");
+            break;
+          }
+          await processJournal(journalId);
+        }
+      } else {
+        emitLog("info", "使用并行模式处理期刊");
+        const limit = pLimit(concurrency);
+        await Promise.allSettled(journalIds.map((id) => limit(() => processJournal(id))));
+      }
     }
 
+    // 检查是否是手动停止
+    if (shouldStop()) {
+      emitLog("info", `详情抓取被手动停止，共处理 ${processed} 个期刊`);
+      return { status: "stopped", processed };
+    }
+
+    // 正常完成
+    await updateConsumerStatus(args.runId, "completed");
     emitLog("info", `详情抓取完成，共处理 ${processed} 个期刊`);
     args.emit({ type: "fetch_done", processed, at: nowTimestamp() });
 
-    return { processed };
+    return { status: "completed", processed };
   } catch (err: any) {
     emitLog("error", `详情抓取失败：${err?.message ?? String(err)}`);
     throw err;

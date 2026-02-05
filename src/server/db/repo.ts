@@ -18,8 +18,22 @@ export const CORE_SOURCES: SourceName[] = [
   "wikidata",
 ];
 
+// 详情抓取数据源（不含 openalex，用于消费者线程）
+export const FETCH_SOURCES: SourceName[] = [
+  "crossref",
+  "doaj",
+  "nlm",
+  "wikidata",
+];
+
 // 所有数据源
 export const ALL_SOURCES: SourceName[] = [...CORE_SOURCES, "wikipedia"];
+
+// 生产者状态（OpenAlex 收集线程）
+export type ProducerStatus = "running" | "paused" | "completed";
+
+// 消费者状态（其他数据源抓取线程）
+export type ConsumerStatus = "running" | "waiting" | "completed";
 
 // ============ 期刊数据类型 ============
 
@@ -191,6 +205,11 @@ export type CrawlRunRow = {
   failed: number;
   current_journal_id: string | null;
   last_error: string | null;
+  // 流水线状态字段
+  producer_status: ProducerStatus | null;
+  consumer_status: ConsumerStatus | null;
+  producer_error: string | null;
+  collected_count: number;
 };
 
 export type FetchStatusRow = {
@@ -244,15 +263,22 @@ export async function setCurrentVersion(version: string): Promise<void> {
 
 // ============ 数据清理 ============
 
+/**
+ * 清空所有数据（包括任务记录）
+ * 用于：
+ * 1. 开始新的全量抓取之前（先清空再创建新任务）
+ * 2. 用户手动点击"清空数据"按钮时
+ */
 export async function clearAllData(): Promise<void> {
   const pool = await getDb();
   await pool.execute("SET FOREIGN_KEY_CHECKS = 0");
   await pool.execute("TRUNCATE TABLE fetch_status");
   await pool.execute("TRUNCATE TABLE issn_aliases");
-  await pool.execute("TRUNCATE TABLE crawl_runs");
   await pool.execute("TRUNCATE TABLE journals");
-  await pool.execute("DELETE FROM system_config WHERE `key` = 'current_version'");
+  await pool.execute("TRUNCATE TABLE system_config");
+  await pool.execute("TRUNCATE TABLE crawl_runs");
   await pool.execute("SET FOREIGN_KEY_CHECKS = 1");
+  console.log("[clearAllData] 已清空所有数据（包括任务记录）");
 }
 
 // ============ 爬取任务管理 ============
@@ -262,16 +288,36 @@ export async function createRun(params: unknown, type: "full" | "incremental" | 
   const now = nowLocal();
   const phase: CrawlPhase = type === "full" ? "collecting" : "fetching";
   
-  await execute(
-    `INSERT INTO crawl_runs(id, type, phase, status, started_at, params_json, total_journals, processed, succeeded, failed)
-     VALUES(?, ?, ?, 'running', ?, ?, 0, 0, 0, 0)`,
-    [id, type, phase, now, JSON.stringify(params)]
-  );
+  // 全量模式：生产者 running，消费者 waiting
+  // 其他模式：生产者 completed（无需收集），消费者 running
+  const producerStatus: ProducerStatus = type === "full" ? "running" : "completed";
+  const consumerStatus: ConsumerStatus = type === "full" ? "waiting" : "running";
+  
+  console.log(`[createRun] 开始创建任务: id=${id}, type=${type}, phase=${phase}`);
+  
+  try {
+    const result = await execute(
+      `INSERT INTO crawl_runs(id, type, phase, status, started_at, params_json, total_journals, processed, succeeded, failed, producer_status, consumer_status, collected_count)
+       VALUES(?, ?, ?, 'running', ?, ?, 0, 0, 0, 0, ?, ?, 0)`,
+      [id, type, phase, now, JSON.stringify(params), producerStatus, consumerStatus]
+    );
+    console.log(`[createRun] INSERT 执行完成: affectedRows=${result.affectedRows}`);
+  } catch (err: any) {
+    console.error(`[createRun] INSERT 失败:`, err.message);
+    throw err;
+  }
   
   const row = await queryOne<CrawlRunRow & RowDataPacket>(
     "SELECT * FROM crawl_runs WHERE id = ?",
     [id]
   );
+  
+  if (row) {
+    console.log(`[createRun] 任务创建成功: id=${row.id}, status=${row.status}`);
+  } else {
+    console.error(`[createRun] 警告：INSERT 后查询不到记录！id=${id}`);
+  }
+  
   return row!;
 }
 
@@ -333,6 +379,26 @@ export async function getLastStoppedRun(): Promise<CrawlRunRow | null> {
      ORDER BY started_at DESC LIMIT 1`
   );
   return row ?? null;
+}
+
+/**
+ * 获取最近的任务（不论状态）
+ */
+export async function getLatestRun(): Promise<CrawlRunRow | null> {
+  try {
+    const row = await queryOne<CrawlRunRow & RowDataPacket>(
+      `SELECT * FROM crawl_runs ORDER BY started_at DESC LIMIT 1`
+    );
+    if (row) {
+      console.log(`[getLatestRun] Found run: id=${row.id}, status=${row.status}, phase=${row.phase}`);
+    } else {
+      console.log(`[getLatestRun] No runs found in database`);
+    }
+    return row ?? null;
+  } catch (error) {
+    console.error(`[getLatestRun] Error:`, error);
+    return null;
+  }
 }
 
 // ============ 期刊 CRUD ============
@@ -823,16 +889,14 @@ export async function getJournalIdsForFetch(filter?: FetchFilter): Promise<strin
     params.push(...filter.sources);
   }
 
+  // 版本号过滤
   if (filter?.version) {
-    if (filter.statuses && filter.statuses.length > 0) {
-      const statusPlaceholders = filter.statuses.map(() => "?").join(",");
-      where.push(`((version = ? AND status IN (${statusPlaceholders})) OR version IS NULL OR version != ?)`);
-      params.push(filter.version, ...filter.statuses, filter.version);
-    } else {
-      where.push(`(version IS NULL OR version != ?)`);
-      params.push(filter.version);
-    }
-  } else if (filter?.statuses && filter.statuses.length > 0) {
+    where.push(`version = ?`);
+    params.push(filter.version);
+  }
+
+  // 状态过滤
+  if (filter?.statuses && filter.statuses.length > 0) {
     where.push(`status IN (${filter.statuses.map(() => "?").join(",")})`);
     params.push(...filter.statuses);
   }
@@ -867,8 +931,9 @@ export async function getSourcesForJournal(
     params.push(...filter.statuses);
   }
 
+  // 版本号过滤（匹配指定版本）
   if (filter?.version) {
-    where.push(`(version IS NULL OR version != ?)`);
+    where.push(`version = ?`);
     params.push(filter.version);
   }
 
@@ -1051,4 +1116,100 @@ export async function hasJournalCoverImage(journalId: string): Promise<boolean> 
     [journalId]
   );
   return !!row;
+}
+
+// ============ 流水线状态管理 ============
+
+/**
+ * 更新生产者状态（OpenAlex 收集线程）
+ */
+export async function updateProducerStatus(
+  runId: string,
+  status: ProducerStatus,
+  error?: string | null
+): Promise<void> {
+  await execute(
+    `UPDATE crawl_runs SET producer_status = ?, producer_error = ? WHERE id = ?`,
+    [status, error ?? null, runId]
+  );
+}
+
+/**
+ * 更新消费者状态（其他数据源抓取线程）
+ */
+export async function updateConsumerStatus(
+  runId: string,
+  status: ConsumerStatus
+): Promise<void> {
+  await execute(
+    `UPDATE crawl_runs SET consumer_status = ? WHERE id = ?`,
+    [status, runId]
+  );
+}
+
+/**
+ * 增加已收集期刊计数
+ */
+export async function bumpCollectedCount(runId: string, delta: number): Promise<void> {
+  await execute(
+    `UPDATE crawl_runs SET collected_count = collected_count + ? WHERE id = ?`,
+    [delta, runId]
+  );
+}
+
+/**
+ * 获取指定版本的 pending 状态期刊数量（用于消费者判断是否需要等待）
+ */
+export async function getPendingJournalCount(version: string, sources?: SourceName[]): Promise<number> {
+  const sourcesToCheck = sources ?? FETCH_SOURCES;
+  const placeholders = sourcesToCheck.map(() => "?").join(",");
+  
+  const row = await queryOne<RowDataPacket>(
+    `SELECT COUNT(DISTINCT journal_id) as count 
+     FROM fetch_status 
+     WHERE version = ? AND source IN (${placeholders}) AND status = 'pending'`,
+    [version, ...sourcesToCheck]
+  );
+  return row?.count ?? 0;
+}
+
+/**
+ * 检查生产者是否已完成
+ */
+export async function isProducerCompleted(runId: string): Promise<boolean> {
+  const row = await queryOne<RowDataPacket>(
+    `SELECT producer_status FROM crawl_runs WHERE id = ?`,
+    [runId]
+  );
+  return row?.producer_status === "completed";
+}
+
+/**
+ * 检查生产者是否已暂停
+ */
+export async function isProducerPaused(runId: string): Promise<boolean> {
+  const row = await queryOne<RowDataPacket>(
+    `SELECT producer_status FROM crawl_runs WHERE id = ?`,
+    [runId]
+  );
+  return row?.producer_status === "paused";
+}
+
+/**
+ * 获取需要恢复的任务（生产者暂停）
+ * 包括状态为 stopped 或 running 且 producer_status = paused 的任务
+ */
+export async function getResumableRun(): Promise<CrawlRunRow | null> {
+  const row = await queryOne<CrawlRunRow & RowDataPacket>(
+    `SELECT * FROM crawl_runs 
+     WHERE producer_status = 'paused'
+       AND status IN ('running', 'stopped')
+     ORDER BY started_at DESC LIMIT 1`
+  );
+  if (row) {
+    console.log(`[getResumableRun] 找到可恢复的任务: id=${row.id}, status=${row.status}, producer_status=${row.producer_status}`);
+  } else {
+    console.log(`[getResumableRun] 没有找到可恢复的任务`);
+  }
+  return row ?? null;
 }

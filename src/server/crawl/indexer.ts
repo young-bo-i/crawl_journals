@@ -174,8 +174,11 @@ export function extractWikipedia(bodyText: string | null): Partial<JournalRow> &
 
 /**
  * 合并各数据源的数据，生成聚合后的期刊数据
+ * @param args.existing - 已有的期刊数据（包含 OpenAlex 数据，用于流水线模式）
+ * @param args.openalex - OpenAlex 数据（用于非流水线模式）
  */
 export function mergeJournalData(args: {
+  existing?: Partial<JournalRow>;
   openalex?: Partial<JournalRow>;
   crossref?: Partial<JournalRow>;
   doaj?: Partial<JournalRow> & { inDoaj?: boolean };
@@ -184,6 +187,9 @@ export function mergeJournalData(args: {
   wikipedia?: Partial<JournalRow> & { hasWikipedia?: boolean };
 }): Partial<JournalRow> {
   const fieldSources: Record<string, SourceName> = {};
+  
+  // 使用 existing 或 openalex 作为基础数据
+  const baseData = args.existing ?? args.openalex;
   
   // 辅助函数：从多个候选值中选择第一个有效值
   function pick<T>(candidates: Array<{ v: T | null | undefined; s: SourceName }>): { v: T | null; s?: SourceName } {
@@ -211,14 +217,14 @@ export function mergeJournalData(args: {
   const title = pick<string>([
     { v: args.doaj?.doaj_title ?? null, s: "doaj" },
     { v: args.crossref?.cr_title ?? null, s: "crossref" },
-    { v: args.openalex?.oa_display_name ?? null, s: "openalex" },
+    { v: baseData?.oa_display_name ?? null, s: "openalex" },
   ]);
   if (title.s) fieldSources.title = title.s;
   
   const publisher = pick<string>([
     { v: args.crossref?.cr_publisher ?? null, s: "crossref" },
     { v: args.doaj?.doaj_publisher ?? null, s: "doaj" },
-    { v: args.openalex?.oa_host_organization ?? null, s: "openalex" },
+    { v: baseData?.oa_host_organization ?? null, s: "openalex" },
   ]);
   if (publisher.s) fieldSources.publisher = publisher.s;
   
@@ -250,14 +256,14 @@ export function mergeJournalData(args: {
   // OA 状态
   const isOpenAccess = pick<boolean>([
     { v: args.doaj?.inDoaj === true ? true : null, s: "doaj" },
-    { v: args.openalex?.oa_is_oa ?? null, s: "openalex" },
+    { v: baseData?.oa_is_oa ?? null, s: "openalex" },
   ]);
   if (isOpenAccess.s) fieldSources.is_open_access = isOpenAccess.s;
   
-  // 合并结果
+  // 合并结果（保留已有的 OpenAlex 字段）
   const result: Partial<JournalRow> = {
-    // 从 OpenAlex 获取基础信息
-    ...args.openalex,
+    // 从已有数据获取 OpenAlex 基础信息
+    ...baseData,
     
     // 从 Crossref 获取信息
     ...args.crossref,
