@@ -10,7 +10,7 @@ services:
       MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
       TZ: Asia/Shanghai
     volumes:
-      - mysql_data:/var/lib/mysql
+      - ./data/mysql:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root123}"]
       interval: 5s
@@ -41,7 +41,3 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-
-volumes:
-  mysql_data:
-    name: crawl_journals_mysql_data
