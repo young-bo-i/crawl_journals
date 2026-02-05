@@ -206,11 +206,13 @@ export async function fetchDetails(args: {
     const issns = existingJournal?.issns ?? [];
     const primaryIssn = issn_l ?? issns[0] ?? null;
 
-    // 获取需要抓取的数据源（只包含 FETCH_SOURCES 中的 pending 状态）
+    // 获取需要抓取的数据源
+    // 默认抓取 pending 状态，但如果传入了 filter.statuses（如 ["failed"]），则使用传入的状态
+    const targetStatuses = args.params.filter?.statuses ?? ["pending"];
     const sourcesToFetch = await getSourcesForJournal(journalId, {
       ...args.params.filter,
       sources: FETCH_SOURCES,
-      statuses: ["pending"],
+      statuses: targetStatuses,
       version: version ?? undefined,
     });
     if (sourcesToFetch.length === 0) return;
