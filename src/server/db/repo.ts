@@ -824,20 +824,17 @@ export async function queryJournals(args: QueryJournalsArgs): Promise<{ total: n
     }
   }
 
-  // SCImago 筛选：使用 JOIN 替代 EXISTS 关联子查询，避免逐行扫描
+  // SCImago 筛选：使用 EXISTS/NOT EXISTS，避免子查询生成大临时表
   const joins: string[] = [];
   if (args.inScimago !== undefined) {
     if (args.inScimago) {
-      // INNER JOIN 只保留在 scimago 中存在的期刊
-      joins.push(
-        "INNER JOIN (SELECT DISTINCT issn FROM scimago_issn_index) _sci ON _sci.issn = journals.issn_l"
+      where.push(
+        "EXISTS (SELECT 1 FROM scimago_issn_index _sci WHERE _sci.issn = journals.issn_l LIMIT 1)"
       );
     } else {
-      // LEFT JOIN + IS NULL 反连接，筛选不在 scimago 中的期刊
-      joins.push(
-        "LEFT JOIN (SELECT DISTINCT issn FROM scimago_issn_index) _sci ON _sci.issn = journals.issn_l"
+      where.push(
+        "NOT EXISTS (SELECT 1 FROM scimago_issn_index _sci WHERE _sci.issn = journals.issn_l LIMIT 1)"
       );
-      where.push("_sci.issn IS NULL");
     }
   }
 
