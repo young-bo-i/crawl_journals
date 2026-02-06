@@ -8,7 +8,7 @@ import {
   type JournalRow,
   bumpRunCounters,
   getCurrentVersion,
-  getFetchStatus,
+  getFetchStatusForJournal,
   getFetchStatsBySource,
   getJournal,
   getJournalIdsForFetch,
@@ -153,11 +153,12 @@ export async function fetchDetails(args: {
   const emitLog = (level: "info" | "warn" | "error", message: string) =>
     args.emit({ type: "fetch_log", level, message, at: nowTimestamp() });
 
-  // 统计数据推送（带节流，最多每 500ms 推送一次）
+  // 统计数据推送（带节流，最多每 3s 推送一次，减少聚合查询压力）
   let lastStatsEmitTime = 0;
+  const STATS_THROTTLE_MS = 3000;
   const emitStatsUpdate = async () => {
     const now = Date.now();
-    if (now - lastStatsEmitTime < 500) return; // 节流：最多每 500ms 一次
+    if (now - lastStatsEmitTime < STATS_THROTTLE_MS) return;
     lastStatsEmitTime = now;
     
     try {
@@ -195,10 +196,20 @@ export async function fetchDetails(args: {
   let processed = 0;
   let totalProcessed = 0;
 
+  // current_journal_id 更新节流（仅用于 UI 展示，无需每个期刊都写）
+  let lastRunUpdateTime = 0;
+  const RUN_UPDATE_THROTTLE_MS = 2000;
+  const throttledUpdateCurrentJournal = async (journalId: string) => {
+    const now = Date.now();
+    if (now - lastRunUpdateTime < RUN_UPDATE_THROTTLE_MS) return;
+    lastRunUpdateTime = now;
+    await updateRun(args.runId, { current_journal_id: journalId });
+  };
+
   async function processJournal(journalId: string) {
     if (shouldStop()) return;
 
-    await updateRun(args.runId, { current_journal_id: journalId });
+    await throttledUpdateCurrentJournal(journalId);
 
     // 获取现有期刊数据（包含已保存的 OpenAlex 数据）
     const existingJournal = await getJournal(journalId);
@@ -450,38 +461,49 @@ export async function fetchDetails(args: {
       sourceResults[taskSources[i]] = results[i];
     }
 
-    // 从已有数据中补充未抓取的数据源
-    for (const source of FETCH_SOURCES) {
-      if (!sourceResults[source]) {
-        const existingStatus = await getFetchStatus(journalId, source);
+    // 从已有数据中补充未抓取的数据源（一次查询替代逐条查询）
+    const missingSources = FETCH_SOURCES.filter((s) => !sourceResults[s]);
+    if (missingSources.length > 0) {
+      const allStatuses = await getFetchStatusForJournal(journalId);
+      const statusMap = new Map(allStatuses.map((s) => [s.source, s]));
+      for (const source of missingSources) {
+        const existing = statusMap.get(source);
         sourceResults[source] = {
-          status: existingStatus?.status ?? "pending",
-          httpStatus: existingStatus?.http_status ?? null,
+          status: existing?.status ?? "pending",
+          httpStatus: existing?.http_status ?? null,
           bodyText: null,
         };
       }
     }
 
-    // 提取各数据源的数据
-    const crossrefData = extractCrossref(sourceResults.crossref?.bodyText ?? null);
-    const doajData = extractDoaj(sourceResults.doaj?.bodyText ?? null);
-    const nlmData = extractNlmEsearch(sourceResults.nlm?.bodyText ?? null);
-    const wikidataData = extractWikidata(sourceResults.wikidata?.bodyText ?? null);
+    // 检查本次抓取是否有新的成功数据（有 bodyText 的成功结果）
+    const hasNewSuccessData = taskSources.some((src, i) =>
+      results[i].status === "success" && results[i].bodyText
+    );
 
-    // 合并数据（使用已有的 existingJournal 作为 OpenAlex 数据）
-    const merged = mergeJournalData({
-      existing: existingJournal ?? undefined,
-      crossref: crossrefData,
-      doaj: doajData.inDoaj ? doajData : undefined,
-      nlm: nlmData,
-      wikidata: wikidataData.hasWikidata ? wikidataData : undefined,
-    });
+    // 仅在有新数据时才执行提取、合并和写入，避免无意义的全量 upsert
+    if (hasNewSuccessData) {
+      // 提取各数据源的数据
+      const crossrefData = extractCrossref(sourceResults.crossref?.bodyText ?? null);
+      const doajData = extractDoaj(sourceResults.doaj?.bodyText ?? null);
+      const nlmData = extractNlmEsearch(sourceResults.nlm?.bodyText ?? null);
+      const wikidataData = extractWikidata(sourceResults.wikidata?.bodyText ?? null);
 
-    // 更新期刊数据
-    await upsertJournal({
-      id: journalId,
-      ...merged,
-    });
+      // 合并数据（使用已有的 existingJournal 作为 OpenAlex 数据）
+      const merged = mergeJournalData({
+        existing: existingJournal ?? undefined,
+        crossref: crossrefData,
+        doaj: doajData.inDoaj ? doajData : undefined,
+        nlm: nlmData,
+        wikidata: wikidataData.hasWikidata ? wikidataData : undefined,
+      });
+
+      // 更新期刊数据
+      await upsertJournal({
+        id: journalId,
+        ...merged,
+      });
+    }
 
     // 计算是否成功（只检查 FETCH_SOURCES）
     const allSuccess = Object.values(sourceResults).every(
