@@ -448,7 +448,7 @@ function parseJournalRow(row: any): JournalRow {
   
   // 转换布尔字段
   const boolFields = [
-    "is_open_access", "oa_is_core", "oa_is_oa", "oa_is_high_oa_rate", "oa_is_in_doaj",
+    "oa_is_core", "oa_is_oa", "oa_is_high_oa_rate", "oa_is_in_doaj",
     "oa_is_in_scielo", "oa_is_ojs", "doaj_boai", "nlm_in_catalog", "wikidata_has_entity",
     "wikipedia_has_article"
   ];
@@ -763,7 +763,7 @@ export async function queryJournals(args: QueryJournalsArgs): Promise<{ total: n
     ["nlm_in_catalog", args.inNlm, "nlm_in_catalog"],
     ["wikidata_has_entity", args.hasWikidata, "wikidata_has_entity"],
     ["wikipedia_has_article", args.hasWikipedia, "wikipedia_has_article"],
-    ["is_open_access", args.isOpenAccess, "is_open_access"],
+    ["oa_is_oa", args.isOpenAccess, "oa_is_oa"],
     ["oa_is_core", args.isCore, "oa_is_core"],
     ["oa_is_oa", args.isOa, "oa_is_oa"],
     ["oa_is_in_scielo", args.inScielo, "oa_is_in_scielo"],

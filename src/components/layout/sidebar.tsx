@@ -7,7 +7,6 @@ import {
   BookOpen,
   Settings,
   FileText,
-  Database,
   TrendingUp,
   Moon,
   Sun,
@@ -34,11 +33,6 @@ const navItems = [
     title: "期刊列表",
     href: "/journals",
     icon: BookOpen,
-  },
-  {
-    title: "JCR 数据",
-    href: "/jcr",
-    icon: Database,
   },
   {
     title: "SCImago 数据",

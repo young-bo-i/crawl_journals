@@ -18,7 +18,7 @@ export default function ApiDocsPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">API 文档</h1>
         <p className="text-muted-foreground">
-          期刊综合数据 API - 包括期刊索引、JCR 影响因子（2020-2024）和中科院分区（2021-2025）
+          期刊综合数据 API - 包括期刊索引数据（OpenAlex、Crossref、DOAJ、NLM、Wikidata）
         </p>
       </div>
 
@@ -39,17 +39,7 @@ export default function ApiDocsPage() {
             <Separator />
             <div className="flex justify-between">
               <dt className="text-muted-foreground">数据内容</dt>
-              <dd>期刊索引 + JCR 影响因子（5年）+ 中科院分区（4年）</dd>
-            </div>
-            <Separator />
-            <div className="flex justify-between">
-              <dt className="text-muted-foreground">JCR 数据</dt>
-              <dd>2020-2024年（100,097条记录）</dd>
-            </div>
-            <Separator />
-            <div className="flex justify-between">
-              <dt className="text-muted-foreground">中科院分区</dt>
-              <dd>2021-2025年（60,365条记录）</dd>
+              <dd>期刊索引（OpenAlex + Crossref + DOAJ + NLM + Wikidata）</dd>
             </div>
             <Separator />
             <div className="flex justify-between">
@@ -151,7 +141,7 @@ export default function ApiDocsPage() {
           <div className="mt-6 rounded-lg bg-muted/50 p-4">
             <p className="text-sm font-medium mb-2">sortBy 可选值：</p>
             <div className="flex flex-wrap gap-2">
-              {["primary_issn", "title", "publisher", "country", "works_count", "cited_by_count", "updated_at"].map((v) => (
+              {["id", "oa_display_name", "oa_host_organization", "oa_country_code", "oa_works_count", "oa_cited_by_count", "updated_at"].map((v) => (
                 <code key={v} className="rounded bg-background px-2 py-1 text-xs">{v}</code>
               ))}
             </div>
@@ -178,66 +168,23 @@ export default function ApiDocsPage() {
     "total": 70519,
     "totalPages": 3526
   },
-  "filters": {
-    "q": null,
-    "inDoaj": true,
-    "inNlm": null,
-    "hasWikidata": null,
-    "isOpenAccess": null,
-    "sortBy": "updated_at",
-    "sortOrder": "desc"
-  },
   "data": [
     {
-      "primary_issn": "0007-9235",
-      "unified_index": {
-        "title": "CA-A CANCER JOURNAL FOR CLINICIANS",
-        "publisher": "Wiley",
-        "country": "US",
-        "languages": ["en"],
-        "subjects": ["Oncology", "Medicine"],
-        "is_open_access": 0,
-        "in_doaj": 0,
-        "in_nlm": 1,
-        "has_wikidata": 1,
-        "works_count": 15000,
-        "cited_by_count": 500000,
-        "updated_at": "2026-01-19 12:00:00"
-      },
-      "jcr": {
-        "total_years": 5,
-        "data": [
-          {
-            "year": 2024,
-            "journal": "CA-A CANCER JOURNAL FOR CLINICIANS",
-            "issn": "0007-9235",
-            "eissn": "1542-4863",
-            "category": "ONCOLOGY(SCIE)",
-            "impact_factor": 232.4,
-            "quartile": "Q1",
-            "rank": "1/326"
-          }
-        ]
-      },
-      "cas_partition": {
-        "total_years": 4,
-        "data": [
-          {
-            "year": 2025,
-            "journal": "CA-A CANCER JOURNAL FOR CLINICIANS",
-            "issn": "0007-9235/1542-4863",
-            "major_category": "医学",
-            "major_partition": "1",
-            "is_top_journal": true,
-            "minor_categories": [
-              {
-                "category": "ONCOLOGY 肿瘤学",
-                "partition": "1 [1/326]"
-              }
-            ]
-          }
-        ]
-      }
+      "id": "S4210228046",
+      "issn_l": "0007-9235",
+      "issns": ["0007-9235", "1542-4863"],
+      "title": "CA-A CANCER JOURNAL FOR CLINICIANS",
+      "publisher": "Wiley",
+      "country": "US",
+      "homepage": "https://acsjournals.onlinelibrary.wiley.com/journal/15424863",
+      "type": "journal",
+      "works_count": 15000,
+      "cited_by_count": 500000,
+      "is_open_access": true,
+      "in_doaj": false,
+      "in_nlm": true,
+      "has_wikidata": true,
+      "updated_at": "2026-01-19 12:00:00"
     }
   ]
 }`}
@@ -259,8 +206,8 @@ export default function ApiDocsPage() {
             { title: "获取第 2 页，每页 50 条", code: "GET /api/public/journals?page=2&pageSize=50" },
             { title: "搜索标题包含 \"science\" 的期刊", code: "GET /api/public/journals?q=science" },
             { title: "筛选 DOAJ 中的开放获取期刊", code: "GET /api/public/journals?inDoaj=true&isOpenAccess=true" },
-            { title: "按引用次数降序排序", code: "GET /api/public/journals?sortBy=cited_by_count&sortOrder=desc" },
-            { title: "组合查询示例", code: "GET /api/public/journals?page=1&pageSize=100&inDoaj=true&sortBy=works_count&sortOrder=desc" },
+            { title: "按引用次数降序排序", code: "GET /api/public/journals?sortBy=oa_cited_by_count&sortOrder=desc" },
+            { title: "组合查询示例", code: "GET /api/public/journals?page=1&pageSize=100&inDoaj=true&sortBy=oa_works_count&sortOrder=desc" },
           ].map((example, i) => (
             <div key={i}>
               <p className="text-sm mb-2">{i + 1}. {example.title}</p>

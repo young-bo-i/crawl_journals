@@ -87,9 +87,10 @@ export async function GET(req: NextRequest) {
         conditions.push("EXISTS (SELECT 1 FROM scimago_issn_index sii WHERE sii.sourceid = scimago_rankings.sourceid AND sii.year = scimago_rankings.year AND sii.issn = ?)");
         params.push(issn);
       } else {
-        // 按期刊名称搜索
-        conditions.push("title LIKE ?");
-        params.push(`%${q}%`);
+        // 按期刊名称搜索（使用 FULLTEXT 索引，比 LIKE '%x%' 快得多）
+        const phraseQuery = `"${q.replace(/"/g, '')}"`;
+        conditions.push("MATCH(title) AGAINST(? IN BOOLEAN MODE)");
+        params.push(phraseQuery);
       }
     }
     
