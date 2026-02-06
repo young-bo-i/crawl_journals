@@ -13,7 +13,7 @@ const boolParam = z.string().transform((v) => v === "true").optional();
 const schema = z.object({
   q: z.string().optional(),
   page: z.coerce.number().int().positive().default(1),
-  pageSize: z.coerce.number().int().positive().max(200).default(20),
+  pageSize: z.coerce.number().int().positive().max(1000).default(20),
   // 布尔筛选
   inDoaj: boolParam,
   inNlm: boolParam,

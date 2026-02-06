@@ -909,7 +909,7 @@ export default function JournalsTable() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {[10, 20, 50, 100].map((s) => (
+                  {[20, 50, 100, 200, 500, 1000].map((s) => (
                     <SelectItem key={s} value={String(s)}>
                       {s} 条/页
                     </SelectItem>

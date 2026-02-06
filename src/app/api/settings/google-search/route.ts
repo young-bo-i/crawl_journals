@@ -4,16 +4,47 @@ import { nowLocal } from "@/server/util/time";
 
 export const runtime = "nodejs";
 
+/**
+ * Google 图片搜索配置（新版 — 多 Key + 多代理）
+ *
+ * apiKeys: 多组 API Key + CX，轮询使用
+ * proxies: 多个 SOCKS5 代理地址，爬虫模式轮询使用
+ *          格式: socks5://host:port 或 socks5://user:pass@host:port
+ */
 export type GoogleSearchConfig = {
-  apiKey: string;
-  cx: string;
+  apiKeys: Array<{ apiKey: string; cx: string }>;
+  proxies: string[];
 };
 
 const CONFIG_KEY = "google_search_config";
 
+// 兼容旧格式 {apiKey, cx} -> 新格式 {apiKeys, proxies}
+function normalizeConfig(raw: any): GoogleSearchConfig {
+  if (!raw) return { apiKeys: [], proxies: [] };
+
+  // 已经是新格式
+  if (Array.isArray(raw.apiKeys)) {
+    return {
+      apiKeys: raw.apiKeys.filter(
+        (k: any) => k && (k.apiKey || k.cx)
+      ),
+      proxies: Array.isArray(raw.proxies)
+        ? raw.proxies.filter((p: string) => !!p)
+        : [],
+    };
+  }
+
+  // 旧格式：单个 apiKey + cx
+  const apiKeys: GoogleSearchConfig["apiKeys"] = [];
+  if (raw.apiKey || raw.cx) {
+    apiKeys.push({ apiKey: raw.apiKey || "", cx: raw.cx || "" });
+  }
+  return { apiKeys, proxies: [] };
+}
+
 /**
  * GET /api/settings/google-search
- * 获取 Google Custom Search 配置
+ * 获取 Google 图片搜索配置
  */
 export async function GET() {
   try {
@@ -22,9 +53,7 @@ export async function GET() {
       [CONFIG_KEY]
     );
 
-    const config: GoogleSearchConfig = row?.value
-      ? JSON.parse(row.value)
-      : { apiKey: "", cx: "" };
+    const config = normalizeConfig(row?.value ? JSON.parse(row.value) : null);
 
     return NextResponse.json({ ok: true, config });
   } catch (err: any) {
@@ -37,15 +66,28 @@ export async function GET() {
 
 /**
  * POST /api/settings/google-search
- * 保存 Google Custom Search 配置
+ * 保存 Google 图片搜索配置
  */
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
-    const cx = typeof body.cx === "string" ? body.cx.trim() : "";
 
-    const config: GoogleSearchConfig = { apiKey, cx };
+    const apiKeys: GoogleSearchConfig["apiKeys"] = Array.isArray(body.apiKeys)
+      ? body.apiKeys
+          .map((k: any) => ({
+            apiKey: typeof k.apiKey === "string" ? k.apiKey.trim() : "",
+            cx: typeof k.cx === "string" ? k.cx.trim() : "",
+          }))
+          .filter((k: { apiKey: string; cx: string }) => k.apiKey || k.cx)
+      : [];
+
+    const proxies: string[] = Array.isArray(body.proxies)
+      ? body.proxies
+          .map((p: any) => (typeof p === "string" ? p.trim() : ""))
+          .filter(Boolean)
+      : [];
+
+    const config: GoogleSearchConfig = { apiKeys, proxies };
     const now = nowLocal();
 
     await execute(

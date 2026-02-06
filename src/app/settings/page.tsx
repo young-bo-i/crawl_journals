@@ -12,6 +12,7 @@ import {
   CheckCircle,
   XCircle,
   ImageIcon,
+  Database,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -46,15 +47,22 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
+  // ===== NLM (NCBI) API Key 配置 =====
+  const [nlmKeys, setNlmKeys] = useState<Array<{ apiKey: string; email: string }>>([]);
+  const [nlmLoading, setNlmLoading] = useState(true);
+  const [nlmSaving, setNlmSaving] = useState(false);
+  const [nlmMessage, setNlmMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
   // ===== Google 图片搜索配置 =====
-  const [googleApiKey, setGoogleApiKey] = useState("");
-  const [googleCx, setGoogleCx] = useState("");
+  const [googleApiKeys, setGoogleApiKeys] = useState<Array<{ apiKey: string; cx: string }>>([]);
+  const [googleProxies, setGoogleProxies] = useState<string[]>([]);
   const [googleLoading, setGoogleLoading] = useState(true);
   const [googleSaving, setGoogleSaving] = useState(false);
   const [googleMessage, setGoogleMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   useEffect(() => {
     loadConfig();
+    loadNlmConfig();
     loadGoogleConfig();
   }, []);
 
@@ -118,6 +126,60 @@ export default function SettingsPage() {
     setKeys(newKeys);
   }
 
+  // ===== NLM (NCBI) 相关方法 =====
+  async function loadNlmConfig() {
+    setNlmLoading(true);
+    try {
+      const res = await fetch("/api/settings/nlm-keys", { cache: "no-store" });
+      const json = await res.json();
+      if (json?.ok && json?.config) {
+        setNlmKeys(json.config.keys?.length > 0 ? json.config.keys : []);
+      }
+    } catch (err) {
+      console.error("加载 NLM 配置失败:", err);
+    } finally {
+      setNlmLoading(false);
+    }
+  }
+
+  async function saveNlmConfig() {
+    setNlmSaving(true);
+    setNlmMessage(null);
+    try {
+      const res = await fetch("/api/settings/nlm-keys", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ keys: nlmKeys }),
+      });
+      const json = await res.json();
+
+      if (json?.ok) {
+        setNlmMessage({ type: "success", text: "保存成功！" });
+        if (json?.config) {
+          setNlmKeys(json.config.keys ?? []);
+        }
+      } else {
+        setNlmMessage({ type: "error", text: json?.error ?? "保存失败" });
+      }
+    } catch (err: unknown) {
+      setNlmMessage({ type: "error", text: err instanceof Error ? err.message : "保存失败" });
+    } finally {
+      setNlmSaving(false);
+    }
+  }
+
+  function addNlmKey() {
+    setNlmKeys([...nlmKeys, { apiKey: "", email: "" }]);
+  }
+  function removeNlmKey(index: number) {
+    setNlmKeys(nlmKeys.filter((_, i) => i !== index));
+  }
+  function updateNlmKey(index: number, field: "apiKey" | "email", value: string) {
+    const updated = [...nlmKeys];
+    updated[index] = { ...updated[index], [field]: value };
+    setNlmKeys(updated);
+  }
+
   // ===== Google 图片搜索相关方法 =====
   async function loadGoogleConfig() {
     setGoogleLoading(true);
@@ -125,8 +187,16 @@ export default function SettingsPage() {
       const res = await fetch("/api/settings/google-search", { cache: "no-store" });
       const json = await res.json();
       if (json?.ok && json?.config) {
-        setGoogleApiKey(json.config.apiKey || "");
-        setGoogleCx(json.config.cx || "");
+        setGoogleApiKeys(
+          json.config.apiKeys?.length > 0
+            ? json.config.apiKeys
+            : []
+        );
+        setGoogleProxies(
+          json.config.proxies?.length > 0
+            ? json.config.proxies
+            : []
+        );
       }
     } catch (err) {
       console.error("加载 Google 配置失败:", err);
@@ -142,15 +212,15 @@ export default function SettingsPage() {
       const res = await fetch("/api/settings/google-search", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ apiKey: googleApiKey, cx: googleCx }),
+        body: JSON.stringify({ apiKeys: googleApiKeys, proxies: googleProxies }),
       });
       const json = await res.json();
 
       if (json?.ok) {
         setGoogleMessage({ type: "success", text: "保存成功！" });
         if (json?.config) {
-          setGoogleApiKey(json.config.apiKey || "");
-          setGoogleCx(json.config.cx || "");
+          setGoogleApiKeys(json.config.apiKeys ?? []);
+          setGoogleProxies(json.config.proxies ?? []);
         }
       } else {
         setGoogleMessage({ type: "error", text: json?.error ?? "保存失败" });
@@ -162,7 +232,33 @@ export default function SettingsPage() {
     }
   }
 
-  if (loading || googleLoading) {
+  // Google API Key 组操作
+  function addGoogleApiKey() {
+    setGoogleApiKeys([...googleApiKeys, { apiKey: "", cx: "" }]);
+  }
+  function removeGoogleApiKey(index: number) {
+    setGoogleApiKeys(googleApiKeys.filter((_, i) => i !== index));
+  }
+  function updateGoogleApiKey(index: number, field: "apiKey" | "cx", value: string) {
+    const updated = [...googleApiKeys];
+    updated[index] = { ...updated[index], [field]: value };
+    setGoogleApiKeys(updated);
+  }
+
+  // SOCKS5 代理操作
+  function addProxy() {
+    setGoogleProxies([...googleProxies, ""]);
+  }
+  function removeProxy(index: number) {
+    setGoogleProxies(googleProxies.filter((_, i) => i !== index));
+  }
+  function updateProxy(index: number, value: string) {
+    const updated = [...googleProxies];
+    updated[index] = value;
+    setGoogleProxies(updated);
+  }
+
+  if (loading || nlmLoading || googleLoading) {
     return (
       <div className="flex items-center justify-center py-12">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -270,6 +366,115 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
+      {/* NLM (NCBI) API Keys */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Database className="h-5 w-5" />
+            <CardTitle>NLM (NCBI) API Keys</CardTitle>
+          </div>
+          <CardDescription>
+            配置 NCBI E-utilities API 密钥，用于 NLM 数据源的期刊查询
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* Info */}
+          <div className="rounded-lg bg-muted/50 p-4 space-y-2">
+            <div className="flex items-start gap-2 text-sm">
+              <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+              <p className="text-muted-foreground">
+                配置 NCBI API Key 可将请求限额从 <strong>5 次/秒</strong> 提升到 <strong>10 次/秒</strong>。不配置也可使用，但频繁请求时可能被限流。
+              </p>
+            </div>
+            <div className="flex items-start gap-2 text-sm">
+              <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+              <p className="text-muted-foreground">
+                可以配置多个 Key，系统会轮询使用以分散请求压力。每个 Key 建议关联一个 Email。
+              </p>
+            </div>
+            <div className="flex items-start gap-2 text-sm">
+              <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+              <div className="text-muted-foreground space-y-1">
+                <p>API Key 获取步骤：</p>
+                <ol className="list-decimal list-inside ml-1 space-y-0.5">
+                  <li>
+                    登录{" "}
+                    <a href="https://www.ncbi.nlm.nih.gov/account/" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                      NCBI 账户
+                    </a>
+                  </li>
+                  <li>进入 Account Settings，滚动到底部「API Key Management」</li>
+                  <li>点击「Create API Key」生成密钥</li>
+                </ol>
+              </div>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* NLM Keys 列表 */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">API Key 列表（轮询使用）</label>
+              <Button variant="outline" size="sm" onClick={addNlmKey}>
+                <Plus className="mr-1 h-3.5 w-3.5" />
+                添加
+              </Button>
+            </div>
+            {nlmKeys.length === 0 && (
+              <p className="text-xs text-muted-foreground py-2">
+                未配置 API Key，NLM 数据源将使用默认限额（5 次/秒）
+              </p>
+            )}
+            {nlmKeys.map((item, index) => (
+              <div key={index} className="flex items-start gap-2 p-3 rounded-lg border bg-muted/20">
+                <span className="text-xs text-muted-foreground mt-2 w-6 shrink-0 text-center">
+                  {index + 1}
+                </span>
+                <div className="flex-1 space-y-2">
+                  <Input
+                    type="password"
+                    value={item.apiKey}
+                    onChange={(e) => updateNlmKey(index, "apiKey", e.target.value)}
+                    placeholder="API Key"
+                    className="font-mono h-8 text-sm"
+                  />
+                  <Input
+                    type="email"
+                    value={item.email}
+                    onChange={(e) => updateNlmKey(index, "email", e.target.value)}
+                    placeholder="关联邮箱（可选）"
+                    className="h-8 text-sm"
+                  />
+                </div>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8 shrink-0 mt-0.5"
+                  onClick={() => removeNlmKey(index)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            ))}
+          </div>
+
+          <Separator />
+
+          <StatusMessage message={nlmMessage} />
+
+          {/* Save Button */}
+          <Button onClick={saveNlmConfig} disabled={nlmSaving}>
+            {nlmSaving ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="mr-2 h-4 w-4" />
+            )}
+            {nlmSaving ? "保存中..." : "保存配置"}
+          </Button>
+        </CardContent>
+      </Card>
+
       {/* Google 图片搜索配置 */}
       <Card>
         <CardHeader>
@@ -322,34 +527,89 @@ export default function SettingsPage() {
 
           <Separator />
 
-          {/* Fields */}
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">API Key</label>
-              <Input
-                type="password"
-                value={googleApiKey}
-                onChange={(e) => setGoogleApiKey(e.target.value)}
-                placeholder="输入 Google API Key"
-                className="font-mono"
-              />
-              <p className="text-xs text-muted-foreground">
-                在 Google Cloud Console 中创建的 API 密钥
-              </p>
+          {/* API Keys 列表 */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">API Key 组（轮询使用）</label>
+              <Button variant="outline" size="sm" onClick={addGoogleApiKey}>
+                <Plus className="mr-1 h-3.5 w-3.5" />
+                添加
+              </Button>
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">搜索引擎 ID (CX)</label>
-              <Input
-                type="text"
-                value={googleCx}
-                onChange={(e) => setGoogleCx(e.target.value)}
-                placeholder="输入 Custom Search Engine ID"
-                className="font-mono"
-              />
-              <p className="text-xs text-muted-foreground">
-                在 Google Programmable Search Engine 中获取的搜索引擎 ID
+            {googleApiKeys.length === 0 && (
+              <p className="text-xs text-muted-foreground py-2">
+                未配置 API Key，系统将使用爬虫模式搜索图片
               </p>
+            )}
+            {googleApiKeys.map((item, index) => (
+              <div key={index} className="flex items-start gap-2 p-3 rounded-lg border bg-muted/20">
+                <span className="text-xs text-muted-foreground mt-2 w-6 shrink-0 text-center">
+                  {index + 1}
+                </span>
+                <div className="flex-1 space-y-2">
+                  <Input
+                    type="password"
+                    value={item.apiKey}
+                    onChange={(e) => updateGoogleApiKey(index, "apiKey", e.target.value)}
+                    placeholder="API Key"
+                    className="font-mono h-8 text-sm"
+                  />
+                  <Input
+                    type="text"
+                    value={item.cx}
+                    onChange={(e) => updateGoogleApiKey(index, "cx", e.target.value)}
+                    placeholder="搜索引擎 ID (CX)"
+                    className="font-mono h-8 text-sm"
+                  />
+                </div>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8 shrink-0 mt-0.5"
+                  onClick={() => removeGoogleApiKey(index)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            ))}
+          </div>
+
+          <Separator />
+
+          {/* SOCKS5 代理列表 */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">SOCKS5 代理（爬虫模式轮询使用）</label>
+              <Button variant="outline" size="sm" onClick={addProxy}>
+                <Plus className="mr-1 h-3.5 w-3.5" />
+                添加
+              </Button>
             </div>
+            <p className="text-xs text-muted-foreground">
+              配置 SOCKS5 代理可以帮助绕过 Google 的请求限制。多个代理会轮询使用。格式：<code className="bg-muted px-1 rounded">socks5://host:port</code> 或 <code className="bg-muted px-1 rounded">socks5://user:pass@host:port</code>
+            </p>
+            {googleProxies.map((proxy, index) => (
+              <div key={index} className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground w-6 shrink-0 text-center">
+                  {index + 1}
+                </span>
+                <Input
+                  type="text"
+                  value={proxy}
+                  onChange={(e) => updateProxy(index, e.target.value)}
+                  placeholder="socks5://127.0.0.1:1080"
+                  className="font-mono flex-1 h-8 text-sm"
+                />
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  onClick={() => removeProxy(index)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            ))}
           </div>
 
           <Separator />

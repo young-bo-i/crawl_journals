@@ -260,7 +260,7 @@ export async function setCurrentVersion(version: string): Promise<void> {
 // ============ 数据清理 ============
 
 /**
- * 清空所有数据（包括任务记录）
+ * 清空所有数据（包括任务记录），但保留系统设置
  * 用于：
  * 1. 开始新的全量抓取之前（先清空再创建新任务）
  * 2. 用户手动点击"清空数据"按钮时
@@ -271,10 +271,13 @@ export async function clearAllData(): Promise<void> {
   await pool.execute("TRUNCATE TABLE fetch_status");
   await pool.execute("TRUNCATE TABLE issn_aliases");
   await pool.execute("TRUNCATE TABLE journals");
-  await pool.execute("TRUNCATE TABLE system_config");
+  // 只清除 system_config 中的版本号，保留用户配置（API Keys、代理等）
+  await pool.execute(
+    "DELETE FROM system_config WHERE `key` = 'current_version'"
+  );
   await pool.execute("TRUNCATE TABLE crawl_runs");
   await pool.execute("SET FOREIGN_KEY_CHECKS = 1");
-  console.log("[clearAllData] 已清空所有数据（包括任务记录）");
+  console.log("[clearAllData] 已清空所有数据（保留系统设置）");
 }
 
 // ============ 爬取任务管理 ============
