@@ -25,11 +25,25 @@ export type ScimagoListItem = {
   issns: string[];
   publisher: string;
   is_open_access: boolean;
+  is_diamond_oa: boolean;
   sjr: number | null;
   sjr_quartile: string | null;
   h_index: number | null;
+  total_docs: number | null;
+  total_docs_3years: number | null;
+  total_refs: number | null;
+  total_citations_3years: number | null;
+  citable_docs_3years: number | null;
+  citations_per_doc_2years: number | null;
+  refs_per_doc: number | null;
+  female_percent: number | null;
+  overton: number | null;
+  sdg: number | null;
   country: string;
+  region: string;
+  coverage: string;
   categories: string;
+  areas: string;
 };
 
 export async function GET(req: NextRequest) {
@@ -61,8 +75,22 @@ export async function GET(req: NextRequest) {
     }
     
     if (q) {
-      conditions.push("title LIKE ?");
-      params.push(`%${q}%`);
+      // 判断是否是 ISSN 格式 (如 1234-5678 或 12345678)
+      const issnPattern = /^\d{4}-?\d{3}[\dXx]$/;
+      if (issnPattern.test(q.trim())) {
+        // 标准化 ISSN 格式
+        let issn = q.trim().toUpperCase().replace(/-/g, "");
+        if (issn.length === 8) {
+          issn = `${issn.slice(0, 4)}-${issn.slice(4)}`;
+        }
+        // 通过 scimago_issn_index 表查询
+        conditions.push("EXISTS (SELECT 1 FROM scimago_issn_index sii WHERE sii.sourceid = scimago_rankings.sourceid AND sii.year = scimago_rankings.year AND sii.issn = ?)");
+        params.push(issn);
+      } else {
+        // 按期刊名称搜索
+        conditions.push("title LIKE ?");
+        params.push(`%${q}%`);
+      }
     }
     
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -85,7 +113,10 @@ export async function GET(req: NextRequest) {
     const [rows] = await pool.execute<RowDataPacket[]>(
       `SELECT 
         sourceid, year, \`rank\`, title, type, issns, publisher,
-        is_open_access, sjr, sjr_quartile, h_index, country, categories
+        is_open_access, is_diamond_oa, sjr, sjr_quartile, h_index,
+        total_docs, total_docs_3years, total_refs, total_citations_3years,
+        citable_docs_3years, citations_per_doc_2years, refs_per_doc,
+        female_percent, overton, sdg, country, region, coverage, categories, areas
        FROM scimago_rankings 
        ${whereClause}
        ORDER BY ${sortField} ${sortOrder}
@@ -103,11 +134,25 @@ export async function GET(req: NextRequest) {
       issns: typeof row.issns === "string" ? JSON.parse(row.issns) : (row.issns || []),
       publisher: row.publisher,
       is_open_access: Boolean(row.is_open_access),
+      is_diamond_oa: Boolean(row.is_diamond_oa),
       sjr: row.sjr ? parseFloat(row.sjr) : null,
       sjr_quartile: row.sjr_quartile,
       h_index: row.h_index,
+      total_docs: row.total_docs,
+      total_docs_3years: row.total_docs_3years,
+      total_refs: row.total_refs,
+      total_citations_3years: row.total_citations_3years,
+      citable_docs_3years: row.citable_docs_3years,
+      citations_per_doc_2years: row.citations_per_doc_2years ? parseFloat(row.citations_per_doc_2years) : null,
+      refs_per_doc: row.refs_per_doc ? parseFloat(row.refs_per_doc) : null,
+      female_percent: row.female_percent ? parseFloat(row.female_percent) : null,
+      overton: row.overton,
+      sdg: row.sdg,
       country: row.country,
+      region: row.region,
+      coverage: row.coverage,
       categories: row.categories,
+      areas: row.areas,
     }));
     
     return NextResponse.json({

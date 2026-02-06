@@ -49,11 +49,25 @@ type ScimagoListItem = {
   issns: string[];
   publisher: string;
   is_open_access: boolean;
+  is_diamond_oa: boolean;
   sjr: number | null;
   sjr_quartile: string | null;
   h_index: number | null;
+  total_docs: number | null;
+  total_docs_3years: number | null;
+  total_refs: number | null;
+  total_citations_3years: number | null;
+  citable_docs_3years: number | null;
+  citations_per_doc_2years: number | null;
+  refs_per_doc: number | null;
+  female_percent: number | null;
+  overton: number | null;
+  sdg: number | null;
   country: string;
+  region: string;
+  coverage: string;
   categories: string;
+  areas: string;
 };
 
 type ImportResult = {
@@ -464,10 +478,10 @@ export default function ScimagoPage() {
               </SelectContent>
             </Select>
 
-            <div className="relative flex-1 max-w-sm">
+            <div className="relative flex-1 max-w-md">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
-                placeholder="搜索期刊名称..."
+                placeholder="搜索期刊名称或 ISSN（如 1234-5678）..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-9"
@@ -476,45 +490,65 @@ export default function ScimagoPage() {
           </div>
 
           {/* 数据表格 */}
-          <div className="rounded-md border">
+          <div className="rounded-md border overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[60px]">排名</TableHead>
-                  <TableHead>期刊名称</TableHead>
-                  <TableHead className="w-[80px]">年份</TableHead>
+                  <TableHead className="w-[60px] sticky left-0 bg-background">排名</TableHead>
+                  <TableHead className="min-w-[250px]">期刊名称</TableHead>
+                  <TableHead className="w-[120px]">ISSN</TableHead>
+                  <TableHead className="w-[60px]">年份</TableHead>
+                  <TableHead className="w-[60px]">类型</TableHead>
                   <TableHead className="w-[80px]">SJR</TableHead>
                   <TableHead className="w-[60px]">分区</TableHead>
-                  <TableHead className="w-[80px]">H指数</TableHead>
+                  <TableHead className="w-[70px]">H指数</TableHead>
+                  <TableHead className="w-[80px]">文档数</TableHead>
+                  <TableHead className="w-[90px]">3年文档</TableHead>
+                  <TableHead className="w-[90px]">3年引用</TableHead>
+                  <TableHead className="w-[90px]">2年篇均引</TableHead>
+                  <TableHead className="w-[70px]">OA</TableHead>
                   <TableHead className="w-[100px]">国家</TableHead>
+                  <TableHead className="w-[100px]">地区</TableHead>
+                  <TableHead className="min-w-[200px]">学科分类</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="h-32 text-center">
+                    <TableCell colSpan={16} className="h-32 text-center">
                       <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                     </TableCell>
                   </TableRow>
                 ) : data.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="h-32 text-center text-muted-foreground">
+                    <TableCell colSpan={16} className="h-32 text-center text-muted-foreground">
                       {scimagoTotal === 0 ? "请先导入 SCImago 数据" : "没有找到匹配的数据"}
                     </TableCell>
                   </TableRow>
                 ) : (
                   data.map((item) => (
                     <TableRow key={`${item.sourceid}-${item.year}`}>
-                      <TableCell className="font-medium">{item.rank ?? "-"}</TableCell>
+                      <TableCell className="font-medium sticky left-0 bg-background">{item.rank ?? "-"}</TableCell>
                       <TableCell>
-                        <div className="max-w-[300px]">
+                        <div className="max-w-[250px]">
                           <p className="font-medium truncate" title={item.title}>{item.title}</p>
                           <p className="text-xs text-muted-foreground truncate">
                             {item.publisher}
                           </p>
                         </div>
                       </TableCell>
+                      <TableCell>
+                        <div className="text-xs font-mono">
+                          {item.issns?.slice(0, 2).map((issn, i) => (
+                            <div key={i}>{issn}</div>
+                          ))}
+                          {item.issns?.length > 2 && (
+                            <span className="text-muted-foreground">+{item.issns.length - 2}</span>
+                          )}
+                        </div>
+                      </TableCell>
                       <TableCell>{item.year}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{item.type || "-"}</TableCell>
                       <TableCell>{item.sjr?.toFixed(3) ?? "-"}</TableCell>
                       <TableCell>
                         {item.sjr_quartile && (
@@ -524,7 +558,32 @@ export default function ScimagoPage() {
                         )}
                       </TableCell>
                       <TableCell>{item.h_index ?? "-"}</TableCell>
+                      <TableCell>{item.total_docs?.toLocaleString() ?? "-"}</TableCell>
+                      <TableCell>{item.total_docs_3years?.toLocaleString() ?? "-"}</TableCell>
+                      <TableCell>{item.total_citations_3years?.toLocaleString() ?? "-"}</TableCell>
+                      <TableCell>{item.citations_per_doc_2years?.toFixed(2) ?? "-"}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-col gap-0.5">
+                          {item.is_open_access && (
+                            <Badge variant="outline" className="text-xs bg-emerald-500/15 text-emerald-500 border-emerald-500/30">
+                              OA
+                            </Badge>
+                          )}
+                          {item.is_diamond_oa && (
+                            <Badge variant="outline" className="text-xs bg-purple-500/15 text-purple-500 border-purple-500/30">
+                              Diamond
+                            </Badge>
+                          )}
+                          {!item.is_open_access && !item.is_diamond_oa && "-"}
+                        </div>
+                      </TableCell>
                       <TableCell className="text-muted-foreground">{item.country || "-"}</TableCell>
+                      <TableCell className="text-muted-foreground">{item.region || "-"}</TableCell>
+                      <TableCell>
+                        <p className="text-xs text-muted-foreground truncate max-w-[200px]" title={item.categories}>
+                          {item.categories || "-"}
+                        </p>
+                      </TableCell>
                     </TableRow>
                   ))
                 )}
