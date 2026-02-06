@@ -405,7 +405,7 @@ async function searchViaSerper(
         },
         body: JSON.stringify({
           q: query,
-          num: 20,
+          num: 10,
         }),
         signal: AbortSignal.timeout(15000),
       });
