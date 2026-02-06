@@ -338,10 +338,10 @@ export default function ScimagoPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* 页面标题 */}
       <div>
-        <h1 className="text-2xl font-bold">SCImago 期刊排名数据</h1>
+        <h1 className="text-xl font-bold">SCImago 期刊排名数据</h1>
         <p className="text-muted-foreground">导入和管理 SCImago Journal Rank (SJR) 数据</p>
       </div>
 
@@ -356,12 +356,12 @@ export default function ScimagoPage() {
             从 SCImago 网站下载的 CSV 文件导入到数据库
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-3">
           {/* 已导入统计 */}
           {scimagoStats.length > 0 ? (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3">
                   <span className="text-sm text-muted-foreground">已导入:</span>
                   <span className="font-medium">{scimagoTotal.toLocaleString()} 条记录</span>
                   <span className="text-muted-foreground">|</span>
@@ -394,7 +394,7 @@ export default function ScimagoPage() {
           )}
 
           {/* 文件选择 */}
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             <input
               ref={fileInputRef}
               type="file"
@@ -438,7 +438,7 @@ export default function ScimagoPage() {
               <p className="text-sm font-medium">导入完成</p>
               
               {/* 汇总统计 */}
-              <div className="flex flex-wrap gap-4 text-sm">
+              <div className="flex flex-wrap gap-3 text-sm">
                 <span className="text-emerald-600">
                   新增: {importResults.reduce((sum, r) => sum + r.inserted, 0).toLocaleString()}
                 </span>
@@ -520,9 +520,9 @@ export default function ScimagoPage() {
             共 {total.toLocaleString()} 条记录
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-3">
           {/* 筛选工具栏 */}
-          <div className="flex flex-wrap items-center gap-4">
+          <div className="flex flex-wrap items-center gap-3">
             <Select value={yearFilter} onValueChange={(v) => { setYearFilter(v); setPage(1); }}>
               <SelectTrigger className="w-[120px]">
                 <SelectValue placeholder="年份" />

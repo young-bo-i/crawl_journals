@@ -15,8 +15,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <ThemeProvider defaultTheme="dark" storageKey="journal-crawler-theme">
           <div className="flex min-h-screen">
             <Sidebar />
-            <main className="flex-1 pl-64">
-              <div className="container mx-auto p-6">
+            <main className="flex-1 min-w-0 pl-52 overflow-x-hidden">
+              <div className="px-5 py-4">
                 {children}
               </div>
             </main>

@@ -268,10 +268,10 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 max-w-5xl">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">系统设置</h1>
+        <h1 className="text-xl font-bold tracking-tight">系统设置</h1>
         <p className="text-muted-foreground">配置爬虫系统的相关参数</p>
       </div>
 

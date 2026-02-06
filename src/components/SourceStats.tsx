@@ -179,7 +179,7 @@ export default function SourceStats({ stats }: { stats: SourceStat[] }) {
           </Table>
 
           {showFailed !== null && (
-            <div className="mt-4 border-t pt-4">
+            <div className="mt-3 border-t pt-3">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
                   <AlertCircle className="h-4 w-4 text-destructive" />

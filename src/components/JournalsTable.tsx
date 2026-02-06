@@ -9,7 +9,6 @@ import {
   Download,
   ExternalLink,
   Loader2,
-  Check,
   X,
   ArrowUpDown,
   ArrowUp,
@@ -59,84 +58,130 @@ import { JournalDetailSheet } from "./JournalDetailSheet";
 import { JournalEditSheet } from "./JournalEditSheet";
 import { ImageSearchPanel } from "./ImageSearchPanel";
 
+// 国旗 emoji（根据 ISO 3166-1 alpha-2 国家代码）
+function countryFlag(code: string): string {
+  if (!code || code.length !== 2) return "";
+  try {
+    return String.fromCodePoint(
+      ...[...code.toUpperCase()].map((c) => c.charCodeAt(0) - 65 + 0x1f1e6),
+    );
+  } catch {
+    return "";
+  }
+}
+
+// 从 JSON 数组项中提取可读文本
+function extractItemLabel(item: unknown): string {
+  if (typeof item === "string") return item;
+  if (typeof item === "object" && item !== null) {
+    const obj = item as Record<string, unknown>;
+    const name = obj.display_name || obj.name || obj.title || obj.value || obj.label;
+    if (name) return String(name);
+    if (obj.currency && obj.price !== undefined) return `${obj.currency} ${obj.price}`;
+    // 简洁的 JSON 预览
+    const keys = Object.keys(obj);
+    return keys.length <= 2
+      ? keys.map((k) => `${k}: ${obj[k]}`).join(", ")
+      : `{${keys.length} 字段}`;
+  }
+  return String(item);
+}
+
 // 格式化函数
 function formatValue(value: unknown, type: ColumnDef["type"]): React.ReactNode {
   if (value === null || value === undefined) {
-    return <span className="text-muted-foreground">-</span>;
+    return <span className="text-muted-foreground/40">—</span>;
   }
 
   switch (type) {
     case "boolean":
       return value ? (
-        <Check className="h-4 w-4 text-emerald-500" />
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" />
+          <span className="text-xs text-emerald-600 dark:text-emerald-400">是</span>
+        </span>
       ) : (
-        <X className="h-4 w-4 text-muted-foreground" />
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full bg-muted-foreground/30 shrink-0" />
+          <span className="text-xs text-muted-foreground">否</span>
+        </span>
       );
-    
+
     case "number":
       return typeof value === "number" ? (
-        <span className="tabular-nums">{value.toLocaleString()}</span>
-      ) : String(value);
-    
-    case "date":
-      return <span className="text-muted-foreground text-xs">{String(value)}</span>;
-    
+        <span className="tabular-nums text-xs">{value.toLocaleString()}</span>
+      ) : (
+        <span className="text-xs">{String(value)}</span>
+      );
+
+    case "date": {
+      const d = String(value);
+      const short = d.includes("T") ? d.split("T")[0] : d.includes(" ") ? d.split(" ")[0] : d;
+      return <span className="text-xs text-muted-foreground tabular-nums">{short}</span>;
+    }
+
     case "url":
       return value ? (
         <a
           href={String(value)}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-primary hover:underline inline-flex items-center gap-1"
+          className="inline-flex items-center justify-center h-6 w-6 rounded-md hover:bg-accent text-primary transition-colors"
+          title={String(value)}
         >
-          链接 <ExternalLink className="h-3 w-3" />
+          <ExternalLink className="h-3.5 w-3.5" />
         </a>
       ) : (
-        <span className="text-muted-foreground">-</span>
+        <span className="text-muted-foreground/40">—</span>
       );
-    
-    case "text":
+
+    case "text": {
       const text = String(value);
-      if (text.length > 100) {
+      return (
+        <span className="line-clamp-1 text-xs" title={text}>
+          {text}
+        </span>
+      );
+    }
+
+    case "json":
+      if (Array.isArray(value)) {
+        if (value.length === 0)
+          return <span className="text-muted-foreground/40">—</span>;
+        const label = extractItemLabel(value[0]);
+        const display = label.length > 32 ? label.slice(0, 30) + "…" : label;
         return (
-          <span className="line-clamp-2 text-xs" title={text}>
-            {text.substring(0, 100)}...
+          <span
+            className="text-xs"
+            title={value.map((v) => extractItemLabel(v)).join("\n")}
+          >
+            {display}
+            {value.length > 1 && (
+              <span className="text-muted-foreground/60 ml-1">
+                +{value.length - 1}
+              </span>
+            )}
           </span>
         );
       }
-      return <span className="text-xs">{text}</span>;
-    
-    case "json":
-      if (Array.isArray(value)) {
-        if (value.length === 0) return <span className="text-muted-foreground">-</span>;
-        // 显示前几个元素
-        const items = value.slice(0, 3).map((v) => (typeof v === "string" ? v : JSON.stringify(v)));
-        return (
-          <div className="flex flex-wrap gap-1">
-            {items.map((item, i) => (
-              <Badge key={i} variant="outline" className="text-[10px]">
-                {String(item).substring(0, 20)}
-              </Badge>
-            ))}
-            {value.length > 3 && (
-              <Badge variant="secondary" className="text-[10px]">
-                +{value.length - 3}
-              </Badge>
-            )}
-          </div>
-        );
-      }
       if (typeof value === "object") {
+        const keys = Object.keys(value as object);
         return (
-          <Badge variant="outline" className="text-[10px]">
-            {Object.keys(value as object).length} 项
-          </Badge>
+          <span className="text-xs text-muted-foreground">
+            {keys.length} 项
+          </span>
         );
       }
-      return String(value);
-    
-    default:
-      return String(value);
+      return <span className="text-xs">{String(value)}</span>;
+
+    default: {
+      const s = String(value);
+      return (
+        <span className="text-xs" title={s.length > 50 ? s : undefined}>
+          {s.length > 50 ? s.slice(0, 48) + "…" : s}
+        </span>
+      );
+    }
   }
 }
 
@@ -458,8 +503,8 @@ export default function JournalsTable() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">期刊列表</h1>
-          <p className="text-muted-foreground">
+          <h1 className="text-xl font-bold tracking-tight">期刊列表</h1>
+          <p className="text-xs text-muted-foreground">
             浏览和搜索已抓取的期刊数据
           </p>
         </div>
@@ -489,7 +534,7 @@ export default function JournalsTable() {
       <Card>
         <CardContent className="p-0">
           {/* Stats */}
-          <div className="flex items-center justify-between border-b px-4 py-3 gap-2 flex-wrap">
+          <div className="flex items-center justify-between border-b px-3 py-2 gap-2 flex-wrap">
             <div className="flex items-center gap-3">
               <p className="text-sm text-muted-foreground">
                 {loading ? "加载中..." : `共 ${total.toLocaleString()} 条结果`}
@@ -721,6 +766,7 @@ export default function JournalsTable() {
                             {/* 中间列 */}
                             {visibleColumnDefs.map((col) => (
                               <TableCell key={col.key} className="whitespace-nowrap overflow-hidden text-ellipsis">
+                                {/* OpenAlex ID — 可点击，monospace */}
                                 {col.key === "id" ? (
                                   <button
                                     onClick={() => {
@@ -728,18 +774,125 @@ export default function JournalsTable() {
                                       setDetailSheetOpen(true);
                                     }}
                                     className="text-primary hover:underline font-mono text-xs"
+                                    title={rowId}
                                   >
                                     {rowId}
                                   </button>
-                                ) : col.key === "oa_display_name" ? (
-                                  <span className="line-clamp-1" title={String(row.oa_display_name || "")}>
-                                    {String(row.oa_display_name || "-")}
+                                ) : /* ISSN-L — monospace */
+                                col.key === "issn_l" ? (
+                                  <span className="font-mono text-xs">
+                                    {String(row.issn_l || "—")}
                                   </span>
-                                ) : col.key === "oa_host_organization" ? (
-                                  <span className="line-clamp-1" title={String(row.oa_host_organization || "")}>
-                                    {String(row.oa_host_organization || "-")}
+                                ) : /* 期刊名称 — 加粗, 单行截断 */
+                                col.key === "oa_display_name" ? (
+                                  <span
+                                    className="line-clamp-1 font-medium text-[13px]"
+                                    title={String(row.oa_display_name || "")}
+                                  >
+                                    {String(row.oa_display_name || "—")}
                                   </span>
-                                ) : (
+                                ) : /* ISSN 列表 — 紧凑 monospace，逗号分隔 */
+                                col.key === "issns" ? (
+                                  (() => {
+                                    const issns = row.issns;
+                                    if (!Array.isArray(issns) || issns.length === 0)
+                                      return <span className="text-muted-foreground/40">—</span>;
+                                    return (
+                                      <span
+                                        className="font-mono text-xs"
+                                        title={issns.join(", ")}
+                                      >
+                                        {String(issns[0])}
+                                        {issns.length > 1 && (
+                                          <span className="text-muted-foreground/60 ml-1">
+                                            +{issns.length - 1}
+                                          </span>
+                                        )}
+                                      </span>
+                                    );
+                                  })()
+                                ) : /* 类型 — 彩色小标签 */
+                                col.key === "oa_type" ? (
+                                  row.oa_type ? (
+                                    <Badge
+                                      variant="secondary"
+                                      className="text-[10px] font-normal px-1.5 py-0"
+                                    >
+                                      {String(row.oa_type)}
+                                    </Badge>
+                                  ) : (
+                                    <span className="text-muted-foreground/40">—</span>
+                                  )
+                                ) : /* 出版机构 — 单行截断 */
+                                col.key === "oa_host_organization" ? (
+                                  <span
+                                    className="line-clamp-1 text-xs"
+                                    title={String(row.oa_host_organization || "")}
+                                  >
+                                    {String(row.oa_host_organization || "—")}
+                                  </span>
+                                ) : /* 出版机构 ID — 紧凑 monospace */
+                                col.key === "oa_host_organization_id" ? (
+                                  row.oa_host_organization_id ? (
+                                    <span
+                                      className="font-mono text-xs text-muted-foreground"
+                                      title={String(row.oa_host_organization_id)}
+                                    >
+                                      {String(row.oa_host_organization_id).length > 14
+                                        ? String(row.oa_host_organization_id).slice(0, 12) + "…"
+                                        : String(row.oa_host_organization_id)}
+                                    </span>
+                                  ) : (
+                                    <span className="text-muted-foreground/40">—</span>
+                                  )
+                                ) : /* 国家/地区 — 国旗 + 代码 */
+                                col.key === "oa_country_code" || col.key === "doaj_country" ? (
+                                  (() => {
+                                    const code = String(row[col.key] || "");
+                                    if (!code) return <span className="text-muted-foreground/40">—</span>;
+                                    const flag = countryFlag(code);
+                                    return (
+                                      <span className="inline-flex items-center gap-1.5 text-xs">
+                                        {flag && <span className="text-base leading-none">{flag}</span>}
+                                        <span>{code}</span>
+                                      </span>
+                                    );
+                                  })()
+                                ) : /* CR/DOAJ 标题 — 单行截断 */
+                                col.key === "cr_title" || col.key === "doaj_title" || col.key === "doaj_alternative_title" || col.key === "wikipedia_article_title" || col.key === "wikipedia_description" ? (
+                                  <span
+                                    className="line-clamp-1 text-xs"
+                                    title={String(row[col.key] || "")}
+                                  >
+                                    {String(row[col.key] || "—")}
+                                  </span>
+                                ) : /* CR/DOAJ 出版社 — 单行截断 */
+                                col.key === "cr_publisher" || col.key === "doaj_publisher" ? (
+                                  <span
+                                    className="line-clamp-1 text-xs"
+                                    title={String(row[col.key] || "")}
+                                  >
+                                    {String(row[col.key] || "—")}
+                                  </span>
+                                ) : /* 自定义标题/出版社 — 单行 + 高亮标记 */
+                                col.key === "custom_title" || col.key === "custom_publisher" || col.key === "custom_description" || col.key === "custom_notes" ? (
+                                  row[col.key] ? (
+                                    <span
+                                      className="line-clamp-1 text-xs text-primary"
+                                      title={String(row[col.key])}
+                                    >
+                                      {String(row[col.key])}
+                                    </span>
+                                  ) : (
+                                    <span className="text-muted-foreground/40">—</span>
+                                  )
+                                ) : /* DOAJ eISSN / pISSN — monospace */
+                                col.key === "doaj_eissn" || col.key === "doaj_pissn" ? (
+                                  <span className="font-mono text-xs">
+                                    {String(row[col.key] || "—")}
+                                  </span>
+                                ) : /* 默认渲染 */
+                                (
                                   formatValue(row[col.key], col.type)
                                 )}
                               </TableCell>
@@ -977,7 +1130,7 @@ export default function JournalsTable() {
           )}
 
           {/* Pagination */}
-          <div className="flex items-center justify-between border-t px-4 py-3">
+          <div className="flex items-center justify-between border-t px-3 py-2">
             <p className="text-sm text-muted-foreground">
               第 {page} 页，共 {pages} 页
             </p>

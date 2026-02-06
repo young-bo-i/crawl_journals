@@ -13,10 +13,10 @@ import { FileJson, Code, Server, AlertCircle } from "lucide-react";
 
 export default function ApiDocsPage() {
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 max-w-5xl">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">API 文档</h1>
+        <h1 className="text-xl font-bold tracking-tight">API 文档</h1>
         <p className="text-muted-foreground">
           期刊综合数据 API - 包括期刊索引数据（OpenAlex、Crossref、DOAJ、NLM、Wikidata）
         </p>
@@ -200,7 +200,7 @@ export default function ApiDocsPage() {
             <CardTitle>请求示例</CardTitle>
           </div>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-3">
           {[
             { title: "获取第一页数据（默认 20 条）", code: "GET /api/public/journals" },
             { title: "获取第 2 页，每页 50 条", code: "GET /api/public/journals?page=2&pageSize=50" },

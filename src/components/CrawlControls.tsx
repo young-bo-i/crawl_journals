@@ -479,12 +479,12 @@ export default function CrawlControls() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 max-w-5xl">
       {/* Header with WebSocket status */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">控制面板</h1>
-          <p className="text-muted-foreground">管理期刊数据爬取任务</p>
+          <h1 className="text-xl font-bold tracking-tight">控制面板</h1>
+          <p className="text-xs text-muted-foreground">管理期刊数据爬取任务</p>
         </div>
         <Badge variant={connected ? "success" : "destructive"} className="text-xs">
           {connected ? <Wifi className="mr-1 h-3 w-3" /> : <WifiOff className="mr-1 h-3 w-3" />}
@@ -493,7 +493,7 @@ export default function CrawlControls() {
       </div>
 
       {/* Stats Overview */}
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-3 md:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">期刊总数</CardTitle>
@@ -669,9 +669,9 @@ export default function CrawlControls() {
           </CardHeader>
           <CardContent className="space-y-4">
             {/* Pipeline Status */}
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 gap-3">
               {/* Producer */}
-              <div className={`rounded-lg border p-4 ${
+              <div className={`rounded-lg border p-3 ${
                 producerStatus === "running" ? "border-primary bg-primary/5" : 
                 producerStatus === "paused" ? "border-amber-500 bg-amber-500/5" :
                 producerStatus === "completed" ? "border-emerald-500 bg-emerald-500/5" : 
@@ -710,7 +710,7 @@ export default function CrawlControls() {
               </div>
               
               {/* Consumer */}
-              <div className={`rounded-lg border p-4 ${
+              <div className={`rounded-lg border p-3 ${
                 consumerStatus === "running" ? "border-primary bg-primary/5" : 
                 consumerStatus === "waiting" ? "border-amber-500 bg-amber-500/5" :
                 consumerStatus === "completed" ? "border-emerald-500 bg-emerald-500/5" : 
@@ -785,7 +785,7 @@ export default function CrawlControls() {
       )}
 
       {/* Source Stats & Logs */}
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-2">
         <SourceStats stats={stats} />
         <CrawlLogs logs={logs} />
       </div>

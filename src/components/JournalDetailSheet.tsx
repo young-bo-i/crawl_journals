@@ -2,9 +2,6 @@
 
 import { useEffect, useState } from "react";
 import {
-  Check,
-  X,
-  Minus,
   Globe,
   BookOpen,
   BarChart3,
@@ -14,11 +11,8 @@ import {
   ExternalLink,
   Loader2,
   Building2,
-  MapPin,
-  Calendar,
   Link as LinkIcon,
   Tag,
-  Languages,
   Pencil,
 } from "lucide-react";
 import {
@@ -51,14 +45,41 @@ interface JournalDetailSheetProps {
   onOpenChange: (open: boolean) => void;
 }
 
-function BoolBadge({ value, trueLabel = "是", falseLabel = "否" }: { value: unknown; trueLabel?: string; falseLabel?: string }) {
+// 国旗 emoji
+function countryFlag(code: string): string {
+  if (!code || code.length !== 2) return "";
+  try {
+    return String.fromCodePoint(
+      ...[...code.toUpperCase()].map((c) => c.charCodeAt(0) - 65 + 0x1f1e6),
+    );
+  } catch {
+    return "";
+  }
+}
+
+function BoolBadge({ value }: { value: unknown }) {
   if (value === null || value === undefined) {
-    return <Badge variant="outline" className="text-xs"><Minus className="mr-1 h-3 w-3" />未知</Badge>;
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+        <span className="h-2 w-2 rounded-full bg-muted-foreground/20 shrink-0" />
+        未知
+      </span>
+    );
   }
   if (value === 1 || value === true) {
-    return <Badge variant="default" className="text-xs bg-emerald-500"><Check className="mr-1 h-3 w-3" />{trueLabel}</Badge>;
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+        <span className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" />
+        是
+      </span>
+    );
   }
-  return <Badge variant="secondary" className="text-xs"><X className="mr-1 h-3 w-3" />{falseLabel}</Badge>;
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+      <span className="h-2 w-2 rounded-full bg-muted-foreground/30 shrink-0" />
+      否
+    </span>
+  );
 }
 
 function formatNumber(v: unknown): string {
@@ -67,42 +88,100 @@ function formatNumber(v: unknown): string {
   return String(v);
 }
 
+// 从数组项中提取可读文本
+function extractLabel(item: unknown): string {
+  if (typeof item === "string") return item;
+  if (typeof item === "object" && item !== null) {
+    const obj = item as Record<string, unknown>;
+    const name = obj.display_name || obj.name || obj.title || obj.value || obj.label;
+    if (name) return String(name);
+    if (obj.currency && obj.price !== undefined) return `${obj.currency} ${obj.price}`;
+    const keys = Object.keys(obj);
+    return keys.length <= 3
+      ? keys.map((k) => `${k}: ${typeof obj[k] === "string" ? obj[k] : JSON.stringify(obj[k])}`).join(", ")
+      : `{${keys.length} 字段}`;
+  }
+  return String(item);
+}
+
 function formatValue(v: unknown): React.ReactNode {
-  if (v === null || v === undefined) return <span className="text-muted-foreground">-</span>;
-  if (typeof v === "boolean") return v ? "是" : "否";
-  if (typeof v === "number") return v.toLocaleString("zh-CN");
+  if (v === null || v === undefined) return <span className="text-muted-foreground/40">—</span>;
+  if (typeof v === "boolean") return <BoolBadge value={v} />;
+  if (typeof v === "number") return <span className="tabular-nums text-sm">{v.toLocaleString("zh-CN")}</span>;
   if (Array.isArray(v)) {
-    if (v.length === 0) return <span className="text-muted-foreground">-</span>;
+    if (v.length === 0) return <span className="text-muted-foreground/40">—</span>;
     return (
-      <div className="flex flex-wrap gap-1">
-        {v.slice(0, 5).map((item, i) => (
-          <Badge key={i} variant="outline" className="text-xs">
-            {typeof item === "object" ? JSON.stringify(item).slice(0, 30) : String(item).slice(0, 30)}
+      <div className="flex flex-wrap gap-1 justify-end">
+        {v.slice(0, 4).map((item, i) => {
+          const text = extractLabel(item);
+          return (
+            <Badge key={i} variant="outline" className="text-[11px] font-normal max-w-[180px] truncate">
+              {text.length > 36 ? text.slice(0, 34) + "…" : text}
+            </Badge>
+          );
+        })}
+        {v.length > 4 && (
+          <Badge variant="secondary" className="text-[11px]">
+            +{v.length - 4}
           </Badge>
-        ))}
-        {v.length > 5 && <Badge variant="secondary" className="text-xs">+{v.length - 5}</Badge>}
+        )}
       </div>
     );
   }
   if (typeof v === "object") {
-    return <Badge variant="outline" className="text-xs">{Object.keys(v).length} 项</Badge>;
+    const entries = Object.entries(v as Record<string, unknown>);
+    if (entries.length === 0) return <span className="text-muted-foreground/40">—</span>;
+    if (entries.length <= 4) {
+      return (
+        <div className="text-xs space-y-0.5 text-right">
+          {entries.map(([key, val]) => (
+            <div key={key}>
+              <span className="text-muted-foreground">{key}: </span>
+              <span>{typeof val === "object" ? JSON.stringify(val) : String(val ?? "—")}</span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+    return (
+      <Badge variant="outline" className="text-[11px] font-normal">
+        {entries.length} 项
+      </Badge>
+    );
   }
   const s = String(v);
   if (s.startsWith("http")) {
-    return (
-      <a href={s} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline text-xs inline-flex items-center gap-1">
-        访问 <ExternalLink className="h-3 w-3" />
-      </a>
-    );
+    try {
+      const url = new URL(s);
+      return (
+        <a
+          href={s}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary hover:underline text-xs inline-flex items-center gap-1"
+        >
+          {url.hostname.replace(/^www\./, "")}
+          <ExternalLink className="h-3 w-3 shrink-0" />
+        </a>
+      );
+    } catch {
+      return (
+        <a href={s} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline text-xs inline-flex items-center gap-1">
+          链接 <ExternalLink className="h-3 w-3" />
+        </a>
+      );
+    }
   }
-  return <span className="text-sm">{s.length > 100 ? s.slice(0, 100) + "..." : s}</span>;
+  return <span className="text-sm">{s.length > 120 ? s.slice(0, 118) + "…" : s}</span>;
 }
 
-function InfoRow({ label, value, highlight }: { label: string; value: unknown; highlight?: boolean }) {
+function InfoRow({ label, value, highlight, isBool }: { label: string; value: unknown; highlight?: boolean; isBool?: boolean }) {
   return (
-    <div className={`flex justify-between items-start py-1.5 ${highlight ? "bg-primary/5 -mx-2 px-2 rounded" : ""}`}>
-      <span className="text-muted-foreground text-sm shrink-0">{label}</span>
-      <div className="text-right max-w-[300px] ml-4">{formatValue(value)}</div>
+    <div className={`flex justify-between items-start py-1.5 gap-4 ${highlight ? "bg-primary/5 -mx-2 px-2 rounded" : ""}`}>
+      <span className="text-muted-foreground text-xs shrink-0 pt-0.5">{label}</span>
+      <div className="text-right min-w-0 max-w-[340px]">
+        {isBool ? <BoolBadge value={value} /> : formatValue(value)}
+      </div>
     </div>
   );
 }
@@ -168,7 +247,7 @@ export function JournalDetailSheet({ journalId, open, onOpenChange }: JournalDet
         </SheetHeader>
 
         <ScrollArea className="h-[calc(100vh-100px)]">
-          <div className="px-6 py-4 space-y-6">
+          <div className="px-6 py-4 space-y-4">
             {loading && (
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -183,31 +262,79 @@ export function JournalDetailSheet({ journalId, open, onOpenChange }: JournalDet
 
             {j && !loading && (
               <>
+                {/* Journal Header: Cover + Name + Meta */}
+                <div className="flex gap-4">
+                  {/* 封面图 */}
+                  <div className="w-[72px] h-[100px] rounded-lg overflow-hidden border bg-muted shrink-0 flex items-center justify-center">
+                    {j.cover_image_name ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={`/api/journals/${j.id}/cover`}
+                        alt=""
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="text-muted-foreground/30">
+                        <BookOpen className="h-6 w-6" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h2 className="text-base font-semibold line-clamp-2 leading-snug">
+                      {String(j.custom_title || j.oa_display_name || "未知期刊")}
+                    </h2>
+                    {!!j.oa_host_organization && (
+                      <p className="text-xs text-muted-foreground mt-1 line-clamp-1">
+                        <Building2 className="h-3 w-3 inline mr-1" />
+                        {String(j.oa_host_organization)}
+                      </p>
+                    )}
+                    <div className="flex items-center gap-2 mt-2 flex-wrap">
+                      {!!j.oa_country_code && (
+                        <span className="inline-flex items-center gap-1 text-xs">
+                          <span className="text-sm leading-none">{countryFlag(String(j.oa_country_code))}</span>
+                          {String(j.oa_country_code)}
+                        </span>
+                      )}
+                      {!!j.oa_type && (
+                        <Badge variant="secondary" className="text-[10px] font-normal">
+                          {String(j.oa_type)}
+                        </Badge>
+                      )}
+                      {!!j.issn_l && (
+                        <span className="text-xs font-mono text-muted-foreground">
+                          ISSN-L: {String(j.issn_l)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
                 {/* Quick Stats */}
                 <div className="grid grid-cols-4 gap-2">
-                  <div className="rounded-lg border p-3">
-                    <div className="flex items-center gap-1 text-xs text-muted-foreground mb-1">
+                  <div className="rounded-lg border p-2.5">
+                    <div className="flex items-center gap-1 text-[11px] text-muted-foreground mb-0.5">
                       <BarChart3 className="h-3 w-3" />
                       作品数
                     </div>
-                    <p className="text-lg font-semibold">{formatNumber(j.oa_works_count)}</p>
+                    <p className="text-base font-semibold tabular-nums">{formatNumber(j.oa_works_count)}</p>
                   </div>
-                  <div className="rounded-lg border p-3">
-                    <div className="flex items-center gap-1 text-xs text-muted-foreground mb-1">
+                  <div className="rounded-lg border p-2.5">
+                    <div className="flex items-center gap-1 text-[11px] text-muted-foreground mb-0.5">
                       <FileText className="h-3 w-3" />
                       被引数
                     </div>
-                    <p className="text-lg font-semibold">{formatNumber(j.oa_cited_by_count)}</p>
+                    <p className="text-base font-semibold tabular-nums">{formatNumber(j.oa_cited_by_count)}</p>
                   </div>
-                  <div className="rounded-lg border p-3">
-                    <div className="flex items-center gap-1 text-xs text-muted-foreground mb-1">
+                  <div className="rounded-lg border p-2.5">
+                    <div className="flex items-center gap-1 text-[11px] text-muted-foreground mb-0.5">
                       <Globe className="h-3 w-3" />
                       OA
                     </div>
                     <BoolBadge value={j.oa_is_oa} />
                   </div>
-                  <div className="rounded-lg border p-3">
-                    <div className="flex items-center gap-1 text-xs text-muted-foreground mb-1">
+                  <div className="rounded-lg border p-2.5">
+                    <div className="flex items-center gap-1 text-[11px] text-muted-foreground mb-0.5">
                       <BookOpen className="h-3 w-3" />
                       DOAJ
                     </div>
@@ -252,7 +379,11 @@ export function JournalDetailSheet({ journalId, open, onOpenChange }: JournalDet
                   <InfoRow label="别名" value={j.oa_alternate_titles} />
                   <InfoRow label="出版机构" value={j.oa_host_organization} highlight />
                   <InfoRow label="出版机构 ID" value={j.oa_host_organization_id} />
-                  <InfoRow label="国家/地区" value={j.oa_country_code} highlight />
+                  <InfoRow label="国家/地区" value={
+                    j.oa_country_code
+                      ? `${countryFlag(String(j.oa_country_code))} ${j.oa_country_code}`
+                      : null
+                  } highlight />
                   <InfoRow label="主页" value={j.oa_homepage_url} />
                   <InfoRow label="作品数" value={j.oa_works_count} />
                   <InfoRow label="被引数" value={j.oa_cited_by_count} />
@@ -260,12 +391,12 @@ export function JournalDetailSheet({ journalId, open, onOpenChange }: JournalDet
                   <InfoRow label="首次发表年" value={j.oa_first_publication_year} />
                   <InfoRow label="最后发表年" value={j.oa_last_publication_year} />
                   <InfoRow label="APC (USD)" value={j.oa_apc_usd} />
-                  <InfoRow label="核心期刊" value={j.oa_is_core} />
-                  <InfoRow label="开放获取" value={j.oa_is_oa} />
-                  <InfoRow label="高 OA 率" value={j.oa_is_high_oa_rate} />
-                  <InfoRow label="在 DOAJ" value={j.oa_is_in_doaj} />
-                  <InfoRow label="在 SciELO" value={j.oa_is_in_scielo} />
-                  <InfoRow label="使用 OJS" value={j.oa_is_ojs} />
+                  <InfoRow label="核心期刊" value={j.oa_is_core} isBool />
+                  <InfoRow label="开放获取" value={j.oa_is_oa} isBool />
+                  <InfoRow label="高 OA 率" value={j.oa_is_high_oa_rate} isBool />
+                  <InfoRow label="在 DOAJ" value={j.oa_is_in_doaj} isBool />
+                  <InfoRow label="在 SciELO" value={j.oa_is_in_scielo} isBool />
+                  <InfoRow label="使用 OJS" value={j.oa_is_ojs} isBool />
                   <InfoRow label="主题分布" value={j.oa_topics} />
                   <InfoRow label="各年引用" value={j.oa_counts_by_year} />
                   <InfoRow label="外部 ID" value={j.oa_ids} />
@@ -293,13 +424,17 @@ export function JournalDetailSheet({ journalId, open, onOpenChange }: JournalDet
                 <Section title="DOAJ 数据" icon={BookOpen}>
                   <InfoRow label="标题" value={j.doaj_title} />
                   <InfoRow label="出版社" value={j.doaj_publisher} />
-                  <InfoRow label="国家" value={j.doaj_country} />
+                  <InfoRow label="国家" value={
+                    j.doaj_country
+                      ? `${countryFlag(String(j.doaj_country))} ${j.doaj_country}`
+                      : null
+                  } />
                   <InfoRow label="语言" value={j.doaj_languages} />
                   <InfoRow label="学科" value={j.doaj_subjects} />
                   <InfoRow label="链接" value={j.doaj_links} />
                   <InfoRow label="APC 信息" value={j.doaj_apc} />
                   <InfoRow label="许可证" value={j.doaj_license} />
-                  <InfoRow label="BOAI 合规" value={j.doaj_boai} />
+                  <InfoRow label="BOAI 合规" value={j.doaj_boai} isBool />
                   <InfoRow label="版权政策" value={j.doaj_copyright} />
                   <InfoRow label="存档策略" value={j.doaj_preservation} />
                   <InfoRow label="出版周期 (周)" value={j.doaj_publication_time_weeks} />
@@ -313,7 +448,7 @@ export function JournalDetailSheet({ journalId, open, onOpenChange }: JournalDet
 
                 {/* NLM Data */}
                 <Section title="NLM Catalog" icon={Award}>
-                  <InfoRow label="已收录" value={j.nlm_in_catalog} />
+                  <InfoRow label="已收录" value={j.nlm_in_catalog} isBool />
                   <InfoRow label="NLM UIDs" value={j.nlm_uids} />
                 </Section>
 
@@ -321,9 +456,9 @@ export function JournalDetailSheet({ journalId, open, onOpenChange }: JournalDet
 
                 {/* Wikidata & Wikipedia */}
                 <Section title="Wikidata / Wikipedia" icon={Globe}>
-                  <InfoRow label="Wikidata 实体" value={j.wikidata_has_entity} />
+                  <InfoRow label="Wikidata 实体" value={j.wikidata_has_entity} isBool />
                   <InfoRow label="Wikidata 主页" value={j.wikidata_homepage} />
-                  <InfoRow label="Wikipedia 文章" value={j.wikipedia_has_article} />
+                  <InfoRow label="Wikipedia 文章" value={j.wikipedia_has_article} isBool />
                   <InfoRow label="文章标题" value={j.wikipedia_article_title} />
                   <InfoRow label="简介" value={j.wikipedia_extract} />
                   <InfoRow label="描述" value={j.wikipedia_description} />
@@ -349,9 +484,9 @@ export function JournalDetailSheet({ journalId, open, onOpenChange }: JournalDet
 
                 {/* Metadata */}
                 <Separator />
-                <div className="text-xs text-muted-foreground space-y-1">
-                  <p>创建时间: {String(j.created_at || "-")}</p>
-                  <p>更新时间: {String(j.updated_at || "-")}</p>
+                <div className="flex items-center justify-between text-[11px] text-muted-foreground/60">
+                  <span>创建: {String(j.created_at || "—")}</span>
+                  <span>更新: {String(j.updated_at || "—")}</span>
                 </div>
               </>
             )}

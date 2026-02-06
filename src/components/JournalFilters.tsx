@@ -125,7 +125,7 @@ export function JournalFilters({ filters, onChange, onSearch, loading }: Journal
 
   return (
     <Card>
-      <CardContent className="pt-4">
+      <CardContent className="pt-3">
         {/* 基础搜索行 */}
         <div className="flex flex-wrap gap-3 items-end">
           <div className="flex-1 min-w-[280px]">
@@ -198,8 +198,8 @@ export function JournalFilters({ filters, onChange, onSearch, loading }: Journal
 
         {/* 高级筛选面板 */}
         {expanded && (
-          <div className="mt-4 pt-4 border-t">
-            <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+          <div className="mt-3 pt-3 border-t">
+            <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
               {/* SCImago 优先期刊筛选 - 放在最前面 */}
               <div>
                 <label className="text-sm text-muted-foreground mb-1.5 block">优先期刊</label>
