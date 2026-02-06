@@ -736,9 +736,21 @@ export async function queryJournals(args: QueryJournalsArgs): Promise<{ total: n
 
   // 关键词搜索
   if (args.q) {
-    where.push("(id LIKE ? OR issn_l LIKE ? OR title LIKE ? OR publisher LIKE ? OR doaj_eissn LIKE ? OR doaj_pissn LIKE ?)");
-    const like = `%${args.q}%`;
-    params.push(like, like, like, like, like, like);
+    const q = args.q.trim();
+    const like = `%${q}%`;
+    
+    // ID/ISSN 使用 LIKE 精确匹配
+    // 标题使用全文索引 BOOLEAN MODE + 双引号进行短语匹配（更精确且快速）
+    // 双引号要求完整短语匹配，而不是单独词匹配
+    const phraseQuery = `"${q.replace(/"/g, '')}"`;  // 移除用户输入中的引号，避免 SQL 注入
+    
+    where.push(`(
+      id LIKE ? OR issn_l LIKE ? OR doaj_eissn LIKE ? OR doaj_pissn LIKE ?
+      OR MATCH(oa_display_name) AGAINST(? IN BOOLEAN MODE)
+      OR MATCH(cr_title) AGAINST(? IN BOOLEAN MODE)
+      OR MATCH(doaj_title) AGAINST(? IN BOOLEAN MODE)
+    )`);
+    params.push(like, like, like, like, phraseQuery, phraseQuery, phraseQuery);
   }
   
   // 布尔筛选

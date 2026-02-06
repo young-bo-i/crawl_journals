@@ -105,7 +105,7 @@ global.__wsManager = {
   getClientCount: () => clients.size,
 };
 
-app.prepare().then(() => {
+app.prepare().then(async () => {
   const server = createServer((req, res) => {
     const parsedUrl = parse(req.url, true);
     handle(req, res, parsedUrl);
@@ -113,8 +113,39 @@ app.prepare().then(() => {
 
   initWebSocket(server);
 
-  server.listen(port, hostname, () => {
+  server.listen(port, hostname, async () => {
     console.log(`> Ready on http://${hostname}:${port}`);
     console.log(`> WebSocket server on ws://${hostname}:${port}/ws`);
+    
+    // 延迟后触发数据库迁移（确保服务器完全启动）
+    setTimeout(() => {
+      console.log("[Server] 启动时执行数据库迁移...");
+      try {
+        const http = require("http");
+        const req = http.request({
+          hostname: hostname === "0.0.0.0" ? "localhost" : hostname,
+          port: port,
+          path: "/api/health",
+          method: "GET",
+          timeout: 30000,
+        }, (res) => {
+          let data = "";
+          res.on("data", (chunk) => { data += chunk; });
+          res.on("end", () => {
+            if (res.statusCode === 200) {
+              console.log("[Server] 数据库迁移完成");
+            } else {
+              console.error("[Server] 健康检查失败:", res.statusCode, data);
+            }
+          });
+        });
+        req.on("error", (err) => {
+          console.error("[Server] 健康检查请求失败:", err.message);
+        });
+        req.end();
+      } catch (err) {
+        console.error("[Server] 启动迁移检查失败:", err.message);
+      }
+    }, 2000);
   });
 });

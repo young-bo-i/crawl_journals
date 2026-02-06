@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage } from "http";
 import { parse } from "url";
 import next from "next";
 import { getWsManager } from "./src/server/ws/manager";
+import { runMigrations } from "./src/server/db/mysql";
 import type { Duplex } from "stream";
 
 const dev = process.env.NODE_ENV !== "production";
@@ -11,7 +12,16 @@ const port = parseInt(process.env.PORT || "3000", 10);
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
-app.prepare().then(() => {
+app.prepare().then(async () => {
+  // 启动时执行数据库迁移，确保所有错误都能暴露出来
+  try {
+    console.log("[Server] 启动时执行数据库迁移...");
+    await runMigrations();
+    console.log("[Server] 数据库迁移完成");
+  } catch (err) {
+    console.error("[Server] 数据库迁移失败:", err);
+    process.exit(1); // 迁移失败则退出，避免服务在数据库异常状态下运行
+  }
   const server = createServer((req, res) => {
     const parsedUrl = parse(req.url!, true);
     handle(req, res, parsedUrl);
