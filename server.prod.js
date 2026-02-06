@@ -99,9 +99,20 @@ function broadcastCrawlEvent(runId, event) {
   }
 }
 
+// 广播任意消息给所有客户端
+function broadcast(message) {
+  const messageStr = typeof message === "string" ? message : JSON.stringify(message);
+  for (const client of clients.values()) {
+    if (client.ws.readyState === 1) { // WebSocket.OPEN
+      client.ws.send(messageStr);
+    }
+  }
+}
+
 // 设置全局引用，供其他模块使用
 global.__wsManager = {
   broadcastCrawlEvent,
+  broadcast,
   getClientCount: () => clients.size,
 };
 

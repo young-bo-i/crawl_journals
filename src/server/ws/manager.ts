@@ -198,6 +198,7 @@ export function getWsManager(): WebSocketManager {
 declare const global: typeof globalThis & {
   __wsManager?: {
     broadcastCrawlEvent: (runId: string, event: CrawlEvent) => void;
+    broadcast: (message: WsMessage) => void;
     getClientCount: () => number;
   };
 };
@@ -217,5 +218,28 @@ export function broadcastCrawlEvent(runId: string, event: CrawlEvent) {
     getWsManager().broadcastCrawlEvent(runId, event);
   } catch {
     // WebSocket 可能未初始化
+  }
+}
+
+/**
+ * 广播任意消息给所有客户端（兼容开发和生产环境）
+ */
+export function broadcastMessage(message: WsMessage) {
+  // 生产环境使用全局引用
+  if (global.__wsManager) {
+    const count = global.__wsManager.getClientCount();
+    global.__wsManager.broadcast(message);
+    return count;
+  }
+
+  // 开发环境使用 WebSocketManager 实例
+  try {
+    const mgr = getWsManager();
+    const count = mgr.getClientCount();
+    mgr.broadcast(message);
+    return count;
+  } catch {
+    // WebSocket 可能未初始化
+    return 0;
   }
 }

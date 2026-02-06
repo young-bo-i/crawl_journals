@@ -17,7 +17,7 @@ import {
   type SortOrder,
 } from "@/server/db/repo";
 import { performImageSearch } from "@/app/api/image-search/route";
-import { getWsManager } from "@/server/ws/manager";
+import { broadcastMessage } from "@/server/ws/manager";
 
 // ============================================================
 // 类型定义
@@ -106,9 +106,12 @@ export async function startBatchCover(
   setTask(newTask);
   broadcastProgress(true);
 
+  console.log(`[batch-cover] ===== Task ${taskId} starting =====`);
+  console.log(`[batch-cover] Filter params received:`, JSON.stringify(filterParams));
+
   // 启动后台处理（不阻塞响应）
   processInBackground(taskId, filterParams).catch((err) => {
-    console.error("[batch-cover] Unexpected error:", err);
+    console.error("[batch-cover] ===== UNCAUGHT ERROR =====", err);
     const t = getTask();
     if (t?.taskId === taskId) {
       t.progress.status = "error";
@@ -136,12 +139,16 @@ function broadcastProgress(force = false) {
   lastBroadcastTime = now;
 
   try {
-    getWsManager().broadcast({
+    const clientCount = broadcastMessage({
       type: "batch_cover_event",
       event: { ...task.progress },
     } as any);
-  } catch {
-    // WS 可能未初始化
+    // 首次或每 50 次打印一次广播日志
+    if (force) {
+      console.log(`[batch-cover] WS broadcast to ${clientCount} client(s), status=${task.progress.status}, current=${task.progress.current}/${task.progress.total}`);
+    }
+  } catch (err: any) {
+    console.error("[batch-cover] WS broadcast error:", err?.message);
   }
 }
 
@@ -154,7 +161,12 @@ async function processInBackground(
   filterParams: Record<string, string>
 ) {
   const task = getTask();
-  if (!task || task.taskId !== taskId) return;
+  if (!task || task.taskId !== taskId) {
+    console.log(`[batch-cover] Task mismatch or null, aborting. current=${getTask()?.taskId}, expected=${taskId}`);
+    return;
+  }
+
+  console.log("[batch-cover] processInBackground() entered");
 
   // ---- 1. 收集所有符合条件的无封面期刊 ----
   const allJournals: Array<{ id: string; name: string }> = [];
@@ -215,7 +227,7 @@ async function processInBackground(
   task.progress.total = allJournals.length;
   task.progress.currentName = `开始处理 ${allJournals.length} 个期刊...`;
   broadcastProgress(true);
-  console.log(`[batch-cover] Collected ${allJournals.length} journals in ${page} page(s)`);
+  console.log(`[batch-cover] ===== Collection done: ${allJournals.length} journals in ${page} page(s) =====`);
 
   if (allJournals.length === 0) {
     task.progress.status = "completed";
@@ -227,13 +239,20 @@ async function processInBackground(
   // ---- 2. 并发处理（并发 5） ----
   const CONCURRENCY = 5;
 
+  let processedSoFar = 0;
+
   const processSingle = async (journal: { id: string; name: string }) => {
     if (task.stopRequested) return;
 
+    const idx = ++processedSoFar;
+    const logPrefix = `[batch-cover][${idx}/${allJournals.length}] ${journal.id}`;
+
     try {
-      // 2a. 检查是否已有封面（防止重复，直接查数据库）
+      // 2a. 检查是否已有封面
+      console.log(`${logPrefix} checking cover...`);
       const hasCover = await hasJournalCoverImage(journal.id);
       if (hasCover) {
+        console.log(`${logPrefix} already has cover, skip`);
         task.progress.skipCount++;
         task.progress.current++;
         task.progress.currentName = `${journal.name}（已有封面，跳过）`;
@@ -241,12 +260,16 @@ async function processInBackground(
         return;
       }
 
-      // 2b. 搜索图片（直接调用搜索函数，不走 HTTP）
+      // 2b. 搜索图片
+      console.log(`${logPrefix} searching images for: ${journal.name}`);
+      const searchStart = Date.now();
       const results = await performImageSearch(
         journal.name + " journal cover"
       );
+      console.log(`${logPrefix} search returned ${results.length} results in ${Date.now() - searchStart}ms`);
 
       if (results.length === 0) {
+        console.warn(`${logPrefix} FAILED: 搜索无结果 (${journal.name})`);
         task.progress.failCount++;
       } else if (!task.stopRequested) {
         // 2c. 从前 3 张中选尺寸最大的一张
@@ -258,6 +281,7 @@ async function processInBackground(
         );
 
         // 2d. 下载图片
+        console.log(`${logPrefix} downloading image: ${best.url.substring(0, 80)}...`);
         const imgRes = await fetch(best.url, {
           headers: {
             "User-Agent":
@@ -308,7 +332,8 @@ async function processInBackground(
         const urlPath = new URL(best.url).pathname;
         const fileName = urlPath.split("/").pop() || "cover.jpg";
 
-        // 2e. 直接写入数据库（不走 HTTP）
+        // 2e. 直接写入数据库
+        console.log(`${logPrefix} saving cover (${(buffer.length / 1024).toFixed(0)}KB, ${mimeType})`);
         await updateJournalCoverImage(
           journal.id,
           buffer,
@@ -316,13 +341,11 @@ async function processInBackground(
           fileName
         );
 
+        console.log(`${logPrefix} SUCCESS`);
         task.progress.successCount++;
       }
     } catch (err: any) {
-      console.error(
-        `[batch-cover] Error for ${journal.id} (${journal.name}):`,
-        err?.message
-      );
+      console.error(`${logPrefix} FAILED: ${err?.message} | name=${journal.name} | stack=${err?.stack?.split("\n")[1]?.trim() ?? ""}`);
       task.progress.failCount++;
     }
 
@@ -332,6 +355,7 @@ async function processInBackground(
   };
 
   // 并发池
+  console.log(`[batch-cover] ===== Starting processing, concurrency=${CONCURRENCY} =====`);
   const queue = [...allJournals];
   const running: Promise<void>[] = [];
 
@@ -355,6 +379,7 @@ async function processInBackground(
 
   // 等待剩余任务完成
   if (running.length > 0) {
+    console.log(`[batch-cover] Waiting for ${running.length} remaining tasks...`);
     await Promise.all(running);
   }
 
