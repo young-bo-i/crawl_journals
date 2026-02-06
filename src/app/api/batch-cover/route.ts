@@ -27,6 +27,8 @@ export async function POST(req: Request) {
     const body = await req.json();
     const filters: Record<string, string> = body.filters ?? {};
 
+    console.log("[batch-cover] POST /api/batch-cover, filters:", JSON.stringify(filters));
+
     const taskId = await startBatchCover(filters);
 
     return Response.json({ ok: true, taskId });

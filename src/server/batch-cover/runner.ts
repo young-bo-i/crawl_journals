@@ -4,9 +4,19 @@
  * 接收筛选条件，在后台异步遍历所有匹配的无封面期刊，
  * 并发 5 个任务搜索 + 下载封面图片，
  * 通过 WebSocket 实时推送进度。
+ *
+ * 注意：直接调用数据库和搜索函数，不走内部 HTTP，避免请求卡死。
  */
 
-import { queryJournals, hasJournalCoverImage, type QueryJournalsArgs, type SortField, type SortOrder } from "@/server/db/repo";
+import {
+  queryJournals,
+  hasJournalCoverImage,
+  updateJournalCoverImage,
+  type QueryJournalsArgs,
+  type SortField,
+  type SortOrder,
+} from "@/server/db/repo";
+import { performImageSearch } from "@/app/api/image-search/route";
 import { getWsManager } from "@/server/ws/manager";
 
 // ============================================================
@@ -36,7 +46,9 @@ type BatchCoverTask = {
 // 全局状态（进程内单例）
 // ============================================================
 
-const globalForBatch = globalThis as unknown as { __batchCoverTask?: BatchCoverTask | null };
+const globalForBatch = globalThis as unknown as {
+  __batchCoverTask?: BatchCoverTask | null;
+};
 
 function getTask(): BatchCoverTask | null {
   return globalForBatch.__batchCoverTask ?? null;
@@ -146,15 +158,22 @@ async function processInBackground(
 
   // ---- 1. 收集所有符合条件的无封面期刊 ----
   const allJournals: Array<{ id: string; name: string }> = [];
-  const PAGE_SIZE = 500;
+  // 每页 5000 条以减少分页次数（只选 4 个轻量字段，内存占用很小）
+  const PAGE_SIZE = 5000;
   let page = 1;
   const queryArgs = buildQueryArgs(filterParams);
 
+  // 打印实际使用的筛选条件，方便排查
+  const activeFilters = Object.entries(filterParams).filter(([, v]) => !!v);
+  console.log(
+    `[batch-cover] Filters: ${activeFilters.length > 0 ? activeFilters.map(([k, v]) => `${k}=${v}`).join(", ") : "(none)"}`
+  );
   console.log("[batch-cover] Collecting journals without covers...");
 
   while (true) {
     if (task.stopRequested) break;
 
+    const startMs = Date.now();
     const { total, rows } = await queryJournals({
       ...queryArgs,
       hasCover: false, // 强制只查无封面的
@@ -162,6 +181,7 @@ async function processInBackground(
       pageSize: PAGE_SIZE,
       fields: ["id", "oa_display_name", "cr_title", "doaj_title"],
     });
+    const elapsed = Date.now() - startMs;
 
     for (const row of rows) {
       allJournals.push({
@@ -172,12 +192,14 @@ async function processInBackground(
       });
     }
 
-    // 第一页时更新 total
-    if (page === 1) {
-      task.progress.total = total;
-      task.progress.currentName = `共 ${total} 个期刊待处理`;
-      broadcastProgress(true);
-    }
+    console.log(
+      `[batch-cover] Page ${page}: fetched ${rows.length} rows in ${elapsed}ms (total: ${allJournals.length}/${total})`
+    );
+
+    // 更新收集阶段的进度
+    task.progress.total = total;
+    task.progress.currentName = `正在收集期刊列表... (${allJournals.length}/${total})`;
+    broadcastProgress(page === 1); // 第一页强制推送
 
     if (rows.length < PAGE_SIZE || allJournals.length >= total) break;
     page++;
@@ -191,7 +213,9 @@ async function processInBackground(
   }
 
   task.progress.total = allJournals.length;
-  console.log(`[batch-cover] Found ${allJournals.length} journals to process`);
+  task.progress.currentName = `开始处理 ${allJournals.length} 个期刊...`;
+  broadcastProgress(true);
+  console.log(`[batch-cover] Collected ${allJournals.length} journals in ${page} page(s)`);
 
   if (allJournals.length === 0) {
     task.progress.status = "completed";
@@ -202,13 +226,12 @@ async function processInBackground(
 
   // ---- 2. 并发处理（并发 5） ----
   const CONCURRENCY = 5;
-  const BASE_URL = `http://localhost:${process.env.PORT || 3000}`;
 
   const processSingle = async (journal: { id: string; name: string }) => {
     if (task.stopRequested) return;
 
     try {
-      // 2a. 检查是否已有封面（防止重复）
+      // 2a. 检查是否已有封面（防止重复，直接查数据库）
       const hasCover = await hasJournalCoverImage(journal.id);
       if (hasCover) {
         task.progress.skipCount++;
@@ -218,24 +241,15 @@ async function processInBackground(
         return;
       }
 
-      // 2b. 搜索图片
-      const searchRes = await fetch(
-        `${BASE_URL}/api/image-search?q=${encodeURIComponent(journal.name + " journal cover")}`,
-        { signal: AbortSignal.timeout(60000) }
+      // 2b. 搜索图片（直接调用搜索函数，不走 HTTP）
+      const results = await performImageSearch(
+        journal.name + " journal cover"
       );
-
-      if (!searchRes.ok) {
-        throw new Error(`搜索失败 (${searchRes.status})`);
-      }
-
-      const searchData = await searchRes.json();
-      const results: Array<{ url: string; width: number; height: number }> =
-        searchData.results ?? [];
 
       if (results.length === 0) {
         task.progress.failCount++;
       } else if (!task.stopRequested) {
-        // 2c. 从前 3 张中选尺寸最大的一张上传
+        // 2c. 从前 3 张中选尺寸最大的一张
         const candidates = results.slice(0, 3);
         const best = candidates.reduce((a, b) =>
           (a.width || 0) * (a.height || 0) >= (b.width || 0) * (b.height || 0)
@@ -243,23 +257,72 @@ async function processInBackground(
             : b
         );
 
-        const uploadRes = await fetch(
-          `${BASE_URL}/api/journals/${journal.id}/cover`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ imageUrl: best.url }),
-            signal: AbortSignal.timeout(30000),
-          }
+        // 2d. 下载图片
+        const imgRes = await fetch(best.url, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (compatible; JournalCoverBot/1.0)",
+            Accept: "image/*",
+          },
+          signal: AbortSignal.timeout(15000),
+        });
+
+        if (!imgRes.ok) {
+          throw new Error(`下载图片失败 (${imgRes.status})`);
+        }
+
+        // 检测 MIME
+        let mimeType =
+          imgRes.headers.get("content-type")?.split(";")[0]?.trim() ??
+          "image/jpeg";
+        const ALLOWED = [
+          "image/jpeg",
+          "image/png",
+          "image/gif",
+          "image/webp",
+        ];
+        if (!ALLOWED.includes(mimeType)) {
+          const ext = best.url
+            .split("?")[0]
+            .split(".")
+            .pop()
+            ?.toLowerCase();
+          const extMap: Record<string, string> = {
+            jpg: "image/jpeg",
+            jpeg: "image/jpeg",
+            png: "image/png",
+            gif: "image/gif",
+            webp: "image/webp",
+          };
+          mimeType = (ext && extMap[ext]) || "image/jpeg";
+        }
+
+        const buffer = Buffer.from(await imgRes.arrayBuffer());
+
+        // 限制 5MB
+        if (buffer.length > 5 * 1024 * 1024) {
+          throw new Error("图片过大");
+        }
+
+        // 从 URL 提取文件名
+        const urlPath = new URL(best.url).pathname;
+        const fileName = urlPath.split("/").pop() || "cover.jpg";
+
+        // 2e. 直接写入数据库（不走 HTTP）
+        await updateJournalCoverImage(
+          journal.id,
+          buffer,
+          mimeType,
+          fileName
         );
 
-        if (!uploadRes.ok) {
-          throw new Error(`上传失败 (${uploadRes.status})`);
-        }
         task.progress.successCount++;
       }
     } catch (err: any) {
-      console.error(`[batch-cover] Error for ${journal.id} (${journal.name}):`, err?.message);
+      console.error(
+        `[batch-cover] Error for ${journal.id} (${journal.name}):`,
+        err?.message
+      );
       task.progress.failCount++;
     }
 
@@ -337,7 +400,8 @@ function buildQueryArgs(
     inScimago: parseBool(params.inScimago),
     // hasCover 由 processInBackground 强制设置为 false
     country: params.country || undefined,
-    oaType: params.oaType && params.oaType !== "all" ? params.oaType : undefined,
+    oaType:
+      params.oaType && params.oaType !== "all" ? params.oaType : undefined,
     minWorksCount: parseNum(params.minWorksCount),
     maxWorksCount: parseNum(params.maxWorksCount),
     minCitedByCount: parseNum(params.minCitedByCount),

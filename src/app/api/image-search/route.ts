@@ -462,6 +462,33 @@ async function searchViaSerper(
 }
 
 // ============================================================
+// 公共搜索接口（供后台批量任务直接调用，跳过 HTTP 层）
+// ============================================================
+
+export async function performImageSearch(
+  query: string
+): Promise<ImageSearchResult[]> {
+  const config = await getConfig();
+
+  let method = config.method;
+  if (method === "google_api" && config.apiKeys.length === 0) method = "scraper_proxy";
+  if (method === "scraper_api" && config.scraperApiKeys.length === 0) method = "scraper_proxy";
+  if (method === "serper_api" && config.serperApiKeys.length === 0) method = "scraper_proxy";
+
+  switch (method) {
+    case "google_api":
+      return searchViaGoogleApi(query, config.apiKeys);
+    case "scraper_api":
+      return searchViaScraperApi(query, config.scraperApiKeys);
+    case "serper_api":
+      return searchViaSerper(query, config.serperApiKeys);
+    case "scraper_proxy":
+    default:
+      return searchViaScraperProxy(query, config.proxies);
+  }
+}
+
+// ============================================================
 // GET /api/image-search?q=...
 // ============================================================
 
