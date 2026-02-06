@@ -384,47 +384,81 @@ async function searchViaSerper(
   query: string,
   serperApiKeys: string[]
 ): Promise<ImageSearchResult[]> {
-  const key = serperApiKeys[serperKeyIndex % serperApiKeys.length];
-  serperKeyIndex++;
+  const maxRetries = Math.min(3, serperApiKeys.length); // 最多重试 3 次，且不超过 Key 数量
+  let lastError: Error | null = null;
 
-  console.log(
-    `[image-search] serper_api using key #${((serperKeyIndex - 1) % serperApiKeys.length) + 1}`
-  );
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const keyIdx = (serperKeyIndex + attempt) % serperApiKeys.length;
+    const key = serperApiKeys[keyIdx];
 
-  const res = await fetch("https://google.serper.dev/images", {
-    method: "POST",
-    headers: {
-      "X-API-KEY": key,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      q: query,
-      num: 20,
-    }),
-    signal: AbortSignal.timeout(15000),
-  });
+    console.log(
+      `[image-search] serper_api using key #${keyIdx + 1}` +
+        (attempt > 0 ? ` (retry ${attempt}/${maxRetries - 1})` : "")
+    );
 
-  if (res.status === 429) {
-    throw new Error("RATE_LIMITED");
+    try {
+      const res = await fetch("https://google.serper.dev/images", {
+        method: "POST",
+        headers: {
+          "X-API-KEY": key,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          q: query,
+          num: 20,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+
+      // Key 额度耗尽或被限流 → 跳过此 Key，试下一个
+      if (res.status === 429 || res.status === 403) {
+        const errText = await res.text().catch(() => "");
+        console.warn(
+          `[image-search] Serper key #${keyIdx + 1} unavailable (${res.status}): ${errText.substring(0, 100)}`
+        );
+        lastError = new Error(
+          res.status === 429 ? "RATE_LIMITED" : `SERPER_API_FAILED:${res.status}`
+        );
+        continue; // 尝试下一个 Key
+      }
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        console.error(
+          `[image-search] Serper API error:`,
+          res.status,
+          errText.substring(0, 200)
+        );
+        throw new Error(`SERPER_API_FAILED:${res.status}`);
+      }
+
+      // 成功 → 更新轮询指针，使下次从下一个 Key 开始
+      serperKeyIndex = keyIdx + 1;
+
+      const data = await res.json();
+      const images: any[] = data.images ?? [];
+
+      return images.map((img) => ({
+        url: img.imageUrl ?? "",
+        thumbnail: img.thumbnailUrl ?? img.imageUrl ?? "",
+        title: img.title ?? "",
+        width: img.imageWidth ?? 0,
+        height: img.imageHeight ?? 0,
+        contextUrl: img.link ?? "",
+      }));
+    } catch (err: any) {
+      // 网络超时等非 HTTP 错误也尝试下一个 Key
+      if (err?.message?.includes("SERPER_API_FAILED")) throw err; // 非限流的 HTTP 错误直接抛出
+      console.warn(
+        `[image-search] Serper key #${keyIdx + 1} request failed:`,
+        err?.message
+      );
+      lastError = err;
+    }
   }
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    console.error(`[image-search] Serper API error:`, res.status, errText.substring(0, 200));
-    throw new Error(`SERPER_API_FAILED:${res.status}`);
-  }
-
-  const data = await res.json();
-  const images: any[] = data.images ?? [];
-
-  return images.map((img) => ({
-    url: img.imageUrl ?? "",
-    thumbnail: img.thumbnailUrl ?? img.imageUrl ?? "",
-    title: img.title ?? "",
-    width: img.imageWidth ?? 0,
-    height: img.imageHeight ?? 0,
-    contextUrl: img.link ?? "",
-  }));
+  // 所有 Key 都失败了
+  throw lastError ?? new Error("RATE_LIMITED");
 }
 
 // ============================================================
