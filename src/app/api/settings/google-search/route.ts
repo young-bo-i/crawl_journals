@@ -5,41 +5,66 @@ import { nowLocal } from "@/server/util/time";
 export const runtime = "nodejs";
 
 /**
- * Google 图片搜索配置（新版 — 多 Key + 多代理）
+ * Google 图片搜索配置
  *
- * apiKeys: 多组 API Key + CX，轮询使用
- * proxies: 多个 SOCKS5 代理地址，爬虫模式轮询使用
- *          格式: socks5://host:port 或 socks5://user:pass@host:port
+ * method: 搜索方式
+ *   - "scraper_proxy" : 直接爬虫 + SOCKS5 代理（默认）
+ *   - "google_api"    : Google Custom Search 官方 API
+ *   - "scraper_api"   : ScraperAPI 第三方代理搜索
+ *
+ * apiKeys: Google Custom Search API Key + CX 组，轮询使用
+ * proxies: SOCKS5 代理地址列表，爬虫模式轮询使用
+ * scraperApiKeys: ScraperAPI 的 API Key 列表，轮询使用
  */
+export type ImageSearchMethod = "scraper_proxy" | "google_api" | "scraper_api";
+
 export type GoogleSearchConfig = {
+  method: ImageSearchMethod;
   apiKeys: Array<{ apiKey: string; cx: string }>;
   proxies: string[];
+  scraperApiKeys: string[];
 };
 
 const CONFIG_KEY = "google_search_config";
 
-// 兼容旧格式 {apiKey, cx} -> 新格式 {apiKeys, proxies}
+const VALID_METHODS: ImageSearchMethod[] = ["scraper_proxy", "google_api", "scraper_api"];
+
+// 兼容旧格式 {apiKey, cx} -> 新格式
 function normalizeConfig(raw: any): GoogleSearchConfig {
-  if (!raw) return { apiKeys: [], proxies: [] };
+  const defaults: GoogleSearchConfig = {
+    method: "scraper_proxy",
+    apiKeys: [],
+    proxies: [],
+    scraperApiKeys: [],
+  };
 
-  // 已经是新格式
-  if (Array.isArray(raw.apiKeys)) {
-    return {
-      apiKeys: raw.apiKeys.filter(
-        (k: any) => k && (k.apiKey || k.cx)
-      ),
-      proxies: Array.isArray(raw.proxies)
-        ? raw.proxies.filter((p: string) => !!p)
-        : [],
-    };
+  if (!raw) return defaults;
+
+  // 解析 method
+  let method: ImageSearchMethod = "scraper_proxy";
+  if (raw.method && VALID_METHODS.includes(raw.method)) {
+    method = raw.method;
+  } else if (Array.isArray(raw.apiKeys) && raw.apiKeys.length > 0) {
+    // 旧配置兼容：有 apiKeys → 推断为 google_api
+    method = "google_api";
   }
 
-  // 旧格式：单个 apiKey + cx
-  const apiKeys: GoogleSearchConfig["apiKeys"] = [];
-  if (raw.apiKey || raw.cx) {
-    apiKeys.push({ apiKey: raw.apiKey || "", cx: raw.cx || "" });
-  }
-  return { apiKeys, proxies: [] };
+  // 解析各字段
+  const apiKeys = Array.isArray(raw.apiKeys)
+    ? raw.apiKeys.filter((k: any) => k && (k.apiKey || k.cx))
+    : raw.apiKey && raw.cx
+      ? [{ apiKey: raw.apiKey, cx: raw.cx }]
+      : [];
+
+  const proxies = Array.isArray(raw.proxies)
+    ? raw.proxies.filter((p: string) => !!p)
+    : [];
+
+  const scraperApiKeys = Array.isArray(raw.scraperApiKeys)
+    ? raw.scraperApiKeys.filter((k: string) => !!k)
+    : [];
+
+  return { method, apiKeys, proxies, scraperApiKeys };
 }
 
 /**
@@ -72,6 +97,11 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
 
+    const method: ImageSearchMethod =
+      body.method && VALID_METHODS.includes(body.method)
+        ? body.method
+        : "scraper_proxy";
+
     const apiKeys: GoogleSearchConfig["apiKeys"] = Array.isArray(body.apiKeys)
       ? body.apiKeys
           .map((k: any) => ({
@@ -87,7 +117,13 @@ export async function POST(req: Request) {
           .filter(Boolean)
       : [];
 
-    const config: GoogleSearchConfig = { apiKeys, proxies };
+    const scraperApiKeys: string[] = Array.isArray(body.scraperApiKeys)
+      ? body.scraperApiKeys
+          .map((k: any) => (typeof k === "string" ? k.trim() : ""))
+          .filter(Boolean)
+      : [];
+
+    const config: GoogleSearchConfig = { method, apiKeys, proxies, scraperApiKeys };
     const now = nowLocal();
 
     await execute(

@@ -56,8 +56,11 @@ export default function SettingsPage() {
   const [nlmMessage, setNlmMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // ===== Google 图片搜索配置 =====
+  type ImageSearchMethod = "scraper_proxy" | "google_api" | "scraper_api";
+  const [googleMethod, setGoogleMethod] = useState<ImageSearchMethod>("scraper_proxy");
   const [googleApiKeys, setGoogleApiKeys] = useState<Array<{ apiKey: string; cx: string }>>([]);
   const [googleProxies, setGoogleProxies] = useState<string[]>([]);
+  const [scraperApiKeys, setScraperApiKeys] = useState<string[]>([]);
   const [googleLoading, setGoogleLoading] = useState(true);
   const [googleSaving, setGoogleSaving] = useState(false);
   const [googleMessage, setGoogleMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -197,16 +200,10 @@ export default function SettingsPage() {
       const res = await fetch("/api/settings/google-search", { cache: "no-store" });
       const json = await res.json();
       if (json?.ok && json?.config) {
-        setGoogleApiKeys(
-          json.config.apiKeys?.length > 0
-            ? json.config.apiKeys
-            : []
-        );
-        setGoogleProxies(
-          json.config.proxies?.length > 0
-            ? json.config.proxies
-            : []
-        );
+        setGoogleMethod(json.config.method || "scraper_proxy");
+        setGoogleApiKeys(json.config.apiKeys?.length > 0 ? json.config.apiKeys : []);
+        setGoogleProxies(json.config.proxies?.length > 0 ? json.config.proxies : []);
+        setScraperApiKeys(json.config.scraperApiKeys?.length > 0 ? json.config.scraperApiKeys : []);
       }
     } catch (err) {
       console.error("加载 Google 配置失败:", err);
@@ -222,15 +219,22 @@ export default function SettingsPage() {
       const res = await fetch("/api/settings/google-search", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ apiKeys: googleApiKeys, proxies: googleProxies }),
+        body: JSON.stringify({
+          method: googleMethod,
+          apiKeys: googleApiKeys,
+          proxies: googleProxies,
+          scraperApiKeys,
+        }),
       });
       const json = await res.json();
 
       if (json?.ok) {
         setGoogleMessage({ type: "success", text: "保存成功！" });
         if (json?.config) {
+          setGoogleMethod(json.config.method || "scraper_proxy");
           setGoogleApiKeys(json.config.apiKeys ?? []);
           setGoogleProxies(json.config.proxies ?? []);
+          setScraperApiKeys(json.config.scraperApiKeys ?? []);
         }
       } else {
         setGoogleMessage({ type: "error", text: json?.error ?? "保存失败" });
@@ -253,6 +257,19 @@ export default function SettingsPage() {
     const updated = [...googleApiKeys];
     updated[index] = { ...updated[index], [field]: value };
     setGoogleApiKeys(updated);
+  }
+
+  // ScraperAPI Key 操作
+  function addScraperApiKey() {
+    setScraperApiKeys([...scraperApiKeys, ""]);
+  }
+  function removeScraperApiKey(index: number) {
+    setScraperApiKeys(scraperApiKeys.filter((_, i) => i !== index));
+  }
+  function updateScraperApiKey(index: number, value: string) {
+    const updated = [...scraperApiKeys];
+    updated[index] = value;
+    setScraperApiKeys(updated);
   }
 
   // SOCKS5 代理操作
@@ -546,137 +563,272 @@ export default function SettingsPage() {
         <CardHeader>
           <div className="flex items-center gap-2">
             <ImageIcon className="h-5 w-5" />
-            <CardTitle>Google 图片搜索</CardTitle>
+            <CardTitle>图片搜索</CardTitle>
           </div>
           <CardDescription>
-            配置 Google Custom Search API，用于搜索期刊封面图片（可选）
+            配置期刊封面图片的搜索方式和相关密钥
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          {/* Info */}
-          <div className="rounded-lg bg-muted/50 p-4 space-y-2">
-            <div className="flex items-start gap-2 text-sm">
-              <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
-              <p className="text-muted-foreground">
-                <strong>不配置也可使用</strong> —— 系统默认通过爬虫方式抓取 Google 图片搜索结果，无需任何密钥。但爬虫方式在频繁使用时可能被 Google 限流。
-              </p>
-            </div>
-            <div className="flex items-start gap-2 text-sm">
-              <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
-              <p className="text-muted-foreground">
-                如需更稳定的搜索体验，可配置 Google Custom Search API Key（免费额度：每天 100 次搜索）。配置后系统将优先使用官方 API。
-              </p>
-            </div>
-            <div className="flex items-start gap-2 text-sm">
-              <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
-              <div className="text-muted-foreground space-y-1">
-                <p>API Key 获取步骤：</p>
-                <ol className="list-decimal list-inside ml-1 space-y-0.5">
-                  <li>
-                    访问{" "}
-                    <a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
-                      Google Cloud Console
-                    </a>
-                    {" "}创建项目，启用 Custom Search JSON API，创建 API Key
-                  </li>
-                  <li>
-                    访问{" "}
-                    <a href="https://cse.google.com/cse/all" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
-                      Google Programmable Search Engine
-                    </a>
-                    {" "}创建搜索引擎，开启「搜索整个网络」和「图片搜索」，获取搜索引擎 ID
-                  </li>
-                </ol>
-              </div>
+          {/* 搜索方式选择 */}
+          <div className="space-y-3">
+            <label className="text-sm font-medium">搜索方式</label>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {([
+                {
+                  value: "scraper_proxy" as ImageSearchMethod,
+                  label: "直接爬虫",
+                  desc: "直接请求 Google Images，支持 SOCKS5 代理轮询",
+                  tag: "免费",
+                },
+                {
+                  value: "google_api" as ImageSearchMethod,
+                  label: "Google API",
+                  desc: "Google Custom Search 官方 API，稳定可靠",
+                  tag: "100次/天/Key",
+                },
+                {
+                  value: "scraper_api" as ImageSearchMethod,
+                  label: "ScraperAPI",
+                  desc: "第三方代理服务，自动处理反爬和 IP 轮换",
+                  tag: "试用5000次",
+                },
+              ]).map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  className={`relative rounded-lg border-2 p-3 text-left transition-colors ${
+                    googleMethod === opt.value
+                      ? "border-primary bg-primary/5"
+                      : "border-muted hover:border-muted-foreground/30"
+                  }`}
+                  onClick={() => setGoogleMethod(opt.value)}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-sm font-medium">{opt.label}</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                      googleMethod === opt.value
+                        ? "bg-primary/15 text-primary"
+                        : "bg-muted text-muted-foreground"
+                    }`}>
+                      {opt.tag}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground leading-relaxed">{opt.desc}</p>
+                </button>
+              ))}
             </div>
           </div>
 
           <Separator />
 
-          {/* API Keys 列表 */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium">API Key 组（轮询使用）</label>
-              <Button variant="outline" size="sm" onClick={addGoogleApiKey}>
-                <Plus className="mr-1 h-3.5 w-3.5" />
-                添加
-              </Button>
-            </div>
-            {googleApiKeys.length === 0 && (
-              <p className="text-xs text-muted-foreground py-2">
-                未配置 API Key，系统将使用爬虫模式搜索图片
-              </p>
-            )}
-            {googleApiKeys.map((item, index) => (
-              <div key={index} className="flex items-start gap-2 p-3 rounded-lg border bg-muted/20">
-                <span className="text-xs text-muted-foreground mt-2 w-6 shrink-0 text-center">
-                  {index + 1}
-                </span>
-                <div className="flex-1 space-y-2">
-                  <Input
-                    type="password"
-                    value={item.apiKey}
-                    onChange={(e) => updateGoogleApiKey(index, "apiKey", e.target.value)}
-                    placeholder="API Key"
-                    className="font-mono h-8 text-sm"
-                  />
-                  <Input
-                    type="text"
-                    value={item.cx}
-                    onChange={(e) => updateGoogleApiKey(index, "cx", e.target.value)}
-                    placeholder="搜索引擎 ID (CX)"
-                    className="font-mono h-8 text-sm"
-                  />
+          {/* ===== 直接爬虫配置 ===== */}
+          {googleMethod === "scraper_proxy" && (
+            <div className="space-y-4">
+              <div className="rounded-lg bg-muted/50 p-4 space-y-2">
+                <div className="flex items-start gap-2 text-sm">
+                  <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+                  <p className="text-muted-foreground">
+                    直接爬取 Google 图片搜索页面。不配置代理可直接使用，但频繁请求会被 Google 限流。
+                    建议配置 SOCKS5 代理以提高稳定性。
+                  </p>
                 </div>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-8 w-8 shrink-0 mt-0.5"
-                  onClick={() => removeGoogleApiKey(index)}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
               </div>
-            ))}
-          </div>
-
-          <Separator />
-
-          {/* SOCKS5 代理列表 */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium">SOCKS5 代理（爬虫模式轮询使用）</label>
-              <Button variant="outline" size="sm" onClick={addProxy}>
-                <Plus className="mr-1 h-3.5 w-3.5" />
-                添加
-              </Button>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium">SOCKS5 代理（轮询使用）</label>
+                  <Button variant="outline" size="sm" onClick={addProxy}>
+                    <Plus className="mr-1 h-3.5 w-3.5" />
+                    添加
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  格式：<code className="bg-muted px-1 rounded">socks5://host:port</code> 或 <code className="bg-muted px-1 rounded">socks5://user:pass@host:port</code>
+                </p>
+                {googleProxies.length === 0 && (
+                  <p className="text-xs text-muted-foreground py-2">
+                    未配置代理，将直接连接 Google（容易被限流）
+                  </p>
+                )}
+                {googleProxies.map((proxy, index) => (
+                  <div key={index} className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground w-6 shrink-0 text-center">
+                      {index + 1}
+                    </span>
+                    <Input
+                      type="text"
+                      value={proxy}
+                      onChange={(e) => updateProxy(index, e.target.value)}
+                      placeholder="socks5://127.0.0.1:1080"
+                      className="font-mono flex-1 h-8 text-sm"
+                    />
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-8 w-8 shrink-0"
+                      onClick={() => removeProxy(index)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
             </div>
-            <p className="text-xs text-muted-foreground">
-              配置 SOCKS5 代理可以帮助绕过 Google 的请求限制。多个代理会轮询使用。格式：<code className="bg-muted px-1 rounded">socks5://host:port</code> 或 <code className="bg-muted px-1 rounded">socks5://user:pass@host:port</code>
-            </p>
-            {googleProxies.map((proxy, index) => (
-              <div key={index} className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground w-6 shrink-0 text-center">
-                  {index + 1}
-                </span>
-                <Input
-                  type="text"
-                  value={proxy}
-                  onChange={(e) => updateProxy(index, e.target.value)}
-                  placeholder="socks5://127.0.0.1:1080"
-                  className="font-mono flex-1 h-8 text-sm"
-                />
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-8 w-8 shrink-0"
-                  onClick={() => removeProxy(index)}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
+          )}
+
+          {/* ===== Google Custom Search API 配置 ===== */}
+          {googleMethod === "google_api" && (
+            <div className="space-y-4">
+              <div className="rounded-lg bg-muted/50 p-4 space-y-2">
+                <div className="flex items-start gap-2 text-sm">
+                  <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+                  <p className="text-muted-foreground">
+                    使用 Google Custom Search 官方 API，每个 Key 免费 100 次/天。可配置多个 Key 轮询使用。
+                  </p>
+                </div>
+                <div className="flex items-start gap-2 text-sm">
+                  <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+                  <div className="text-muted-foreground space-y-1">
+                    <p>获取步骤：</p>
+                    <ol className="list-decimal list-inside ml-1 space-y-0.5">
+                      <li>
+                        访问{" "}
+                        <a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                          Google Cloud Console
+                        </a>
+                        {" "}创建项目，启用 Custom Search JSON API，创建 API Key
+                      </li>
+                      <li>
+                        访问{" "}
+                        <a href="https://cse.google.com/cse/all" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                          Programmable Search Engine
+                        </a>
+                        {" "}创建搜索引擎，开启「搜索整个网络」和「图片搜索」，获取 CX ID
+                      </li>
+                    </ol>
+                  </div>
+                </div>
               </div>
-            ))}
-          </div>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium">API Key 组（轮询使用）</label>
+                  <Button variant="outline" size="sm" onClick={addGoogleApiKey}>
+                    <Plus className="mr-1 h-3.5 w-3.5" />
+                    添加
+                  </Button>
+                </div>
+                {googleApiKeys.length === 0 && (
+                  <p className="text-xs text-muted-foreground py-2">
+                    请添加至少一个 API Key + CX 组合
+                  </p>
+                )}
+                {googleApiKeys.map((item, index) => (
+                  <div key={index} className="flex items-start gap-2 p-3 rounded-lg border bg-muted/20">
+                    <span className="text-xs text-muted-foreground mt-2 w-6 shrink-0 text-center">
+                      {index + 1}
+                    </span>
+                    <div className="flex-1 space-y-2">
+                      <Input
+                        type="password"
+                        value={item.apiKey}
+                        onChange={(e) => updateGoogleApiKey(index, "apiKey", e.target.value)}
+                        placeholder="API Key"
+                        className="font-mono h-8 text-sm"
+                      />
+                      <Input
+                        type="text"
+                        value={item.cx}
+                        onChange={(e) => updateGoogleApiKey(index, "cx", e.target.value)}
+                        placeholder="搜索引擎 ID (CX)"
+                        className="font-mono h-8 text-sm"
+                      />
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-8 w-8 shrink-0 mt-0.5"
+                      onClick={() => removeGoogleApiKey(index)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ===== ScraperAPI 配置 ===== */}
+          {googleMethod === "scraper_api" && (
+            <div className="space-y-4">
+              <div className="rounded-lg bg-muted/50 p-4 space-y-2">
+                <div className="flex items-start gap-2 text-sm">
+                  <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+                  <p className="text-muted-foreground">
+                    通过{" "}
+                    <a href="https://www.scraperapi.com" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                      ScraperAPI
+                    </a>
+                    {" "}代理请求 Google 图片搜索。ScraperAPI 会自动处理 IP 轮换、CAPTCHA 验证等反爬措施，99.99% 成功率。
+                  </p>
+                </div>
+                <div className="flex items-start gap-2 text-sm">
+                  <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+                  <p className="text-muted-foreground">
+                    免费试用 <strong>5,000 次</strong>请求（7 天），无需信用卡。
+                    可配置多个 Key 轮询以分散用量。
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 text-sm">
+                  <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <span className="text-muted-foreground">注册获取 API Key：</span>
+                  <a
+                    href="https://dashboard.scraperapi.com/signup"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary hover:underline"
+                  >
+                    dashboard.scraperapi.com
+                  </a>
+                </div>
+              </div>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium">API Key 列表（轮询使用）</label>
+                  <Button variant="outline" size="sm" onClick={addScraperApiKey}>
+                    <Plus className="mr-1 h-3.5 w-3.5" />
+                    添加
+                  </Button>
+                </div>
+                {scraperApiKeys.length === 0 && (
+                  <p className="text-xs text-muted-foreground py-2">
+                    请添加至少一个 ScraperAPI Key
+                  </p>
+                )}
+                {scraperApiKeys.map((key, index) => (
+                  <div key={index} className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground w-6 shrink-0 text-center">
+                      {index + 1}
+                    </span>
+                    <Input
+                      type="password"
+                      value={key}
+                      onChange={(e) => updateScraperApiKey(index, e.target.value)}
+                      placeholder="ScraperAPI Key"
+                      className="font-mono flex-1 h-8 text-sm"
+                    />
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-8 w-8 shrink-0"
+                      onClick={() => removeScraperApiKey(index)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <Separator />
 
