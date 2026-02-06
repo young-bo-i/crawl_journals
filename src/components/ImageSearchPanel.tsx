@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import {
   Search,
   Loader2,
@@ -10,6 +10,7 @@ import {
   AlertCircle,
   Check,
   ExternalLink,
+  FileUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -55,6 +56,10 @@ export function ImageSearchPanel({
   const [previewImage, setPreviewImage] = useState<ImageResult | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState(false);
+
+  // 手动上传文件
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [fileUploading, setFileUploading] = useState(false);
 
   // 搜索图片
   const handleSearch = useCallback(async () => {
@@ -126,6 +131,52 @@ export function ImageSearchPanel({
     [journalId, onUploaded]
   );
 
+  // 手动选择文件上传
+  const handleFileUpload = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      // 重置 input 以便再次选择同一文件
+      e.target.value = "";
+
+      const allowedTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+      if (!allowedTypes.includes(file.type)) {
+        alert("不支持的文件格式，请上传 JPG、PNG、GIF 或 WebP 图片");
+        return;
+      }
+
+      if (file.size > 5 * 1024 * 1024) {
+        alert("文件过大，最大支持 5MB");
+        return;
+      }
+
+      setFileUploading(true);
+
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const res = await fetch(`/api/journals/${journalId}/cover`, {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.error || "上传失败");
+        }
+
+        onUploaded();
+      } catch (err: any) {
+        alert(`上传失败: ${err.message}`);
+      } finally {
+        setFileUploading(false);
+      }
+    },
+    [journalId, onUploaded]
+  );
+
   return (
     <div className="border-t bg-muted/30 p-4 space-y-3">
       {/* 头部：搜索栏 + 关闭按钮 */}
@@ -155,6 +206,28 @@ export function ImageSearchPanel({
             搜索
           </Button>
         </div>
+        {/* 本地上传按钮 */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/gif,image/webp"
+          className="hidden"
+          onChange={handleFileUpload}
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          className="shrink-0 gap-1"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={fileUploading}
+        >
+          {fileUploading ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <FileUp className="h-3 w-3" />
+          )}
+          本地上传
+        </Button>
         <Button
           variant="ghost"
           size="icon"
