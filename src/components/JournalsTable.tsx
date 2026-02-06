@@ -348,8 +348,9 @@ export default function JournalsTable() {
     setPage(1);
   };
 
-  // 批量抓取封面
+  // 批量抓取封面（并发 5）
   const handleBatchCover = useCallback(async () => {
+    const CONCURRENCY = 5;
     const noCoverRows = rows.filter((r) => !r.cover_image_name);
     if (noCoverRows.length === 0) return;
 
@@ -363,23 +364,36 @@ export default function JournalsTable() {
       failCount: 0,
     });
 
+    let completed = 0;
     let successCount = 0;
     let failCount = 0;
 
-    for (let i = 0; i < noCoverRows.length; i++) {
-      if (batchStopRef.current) break;
+    let skippedCount = 0;
 
-      const row = noCoverRows[i];
+    // 处理单个期刊封面
+    const processSingle = async (row: Record<string, unknown>) => {
+      if (batchStopRef.current) return;
+
       const rowId = row.id as string;
       const name = String(row.oa_display_name || row.cr_title || row.doaj_title || "");
 
-      setBatchProgress((prev) => ({
-        ...prev!,
-        current: i + 1,
-        currentName: name,
-      }));
-
       try {
+        // 0. 先检查是否已有封面（防止多用户重复操作）
+        const checkRes = await fetch(`/api/journals/${rowId}/cover`, { method: "HEAD" });
+        if (checkRes.ok) {
+          // 已有封面，跳过
+          skippedCount++;
+          completed++;
+          setBatchProgress({
+            current: completed,
+            total: noCoverRows.length,
+            currentName: `${name}（已有封面，跳过）`,
+            successCount,
+            failCount,
+          });
+          return;
+        }
+
         // 1. 搜索图片
         const searchRes = await fetch(
           `/api/image-search?q=${encodeURIComponent(name + " journal cover")}`
@@ -391,36 +405,63 @@ export default function JournalsTable() {
 
         if (results.length === 0) {
           failCount++;
-          setBatchProgress((prev) => ({ ...prev!, failCount }));
-          continue;
+        } else if (!batchStopRef.current) {
+          // 2. 从前 3 张中选尺寸最大的一张上传
+          const candidates = results.slice(0, 3);
+          const best = candidates.reduce((a, b) =>
+            (a.width || 0) * (a.height || 0) >= (b.width || 0) * (b.height || 0)
+              ? a
+              : b
+          );
+
+          const uploadRes = await fetch(`/api/journals/${rowId}/cover`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ imageUrl: best.url }),
+          });
+
+          if (!uploadRes.ok) throw new Error("上传失败");
+          successCount++;
         }
-
-        if (batchStopRef.current) break;
-
-        // 2. 从前 3 张中选尺寸最大的一张上传
-        const candidates = results.slice(0, 3);
-        const best = candidates.reduce((a, b) =>
-          (a.width || 0) * (a.height || 0) >= (b.width || 0) * (b.height || 0)
-            ? a
-            : b
-        );
-
-        const uploadRes = await fetch(`/api/journals/${rowId}/cover`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ imageUrl: best.url }),
-        });
-
-        if (!uploadRes.ok) throw new Error("上传失败");
-
-        successCount++;
-        setBatchProgress((prev) => ({ ...prev!, successCount }));
       } catch (err) {
         console.error(`Batch cover error for ${rowId}:`, err);
         failCount++;
-        setBatchProgress((prev) => ({ ...prev!, failCount }));
+      }
+
+      completed++;
+      setBatchProgress({
+        current: completed,
+        total: noCoverRows.length,
+        currentName: name,
+        successCount,
+        failCount,
+      });
+    };
+
+    // 并发池：维持最多 CONCURRENCY 个并行任务
+    const queue = [...noCoverRows];
+    const running: Promise<void>[] = [];
+
+    while (queue.length > 0 || running.length > 0) {
+      if (batchStopRef.current) break;
+
+      // 填满并发池
+      while (running.length < CONCURRENCY && queue.length > 0) {
+        const row = queue.shift()!;
+        const task = processSingle(row).then(() => {
+          running.splice(running.indexOf(task), 1);
+        });
+        running.push(task);
+      }
+
+      // 等待任一任务完成
+      if (running.length > 0) {
+        await Promise.race(running);
       }
     }
+
+    // 等待剩余任务完成
+    await Promise.all(running);
 
     // 完成后刷新列表
     setCoverVersion((v) => v + 1);
@@ -1146,7 +1187,7 @@ export default function JournalsTable() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {[20, 50, 100, 200, 500, 1000].map((s) => (
+                  {[20, 50, 100, 200, 500, 1000, 5000, 10000].map((s) => (
                     <SelectItem key={s} value={String(s)}>
                       {s} 条/页
                     </SelectItem>
