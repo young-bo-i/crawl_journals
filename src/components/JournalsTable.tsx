@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
   ChevronLeft,
   ChevronRight,
@@ -16,6 +16,8 @@ import {
   ArrowDown,
   Eye,
   Pencil,
+  ImageIcon,
+  ChevronDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -45,6 +47,7 @@ import {
 } from "@/shared/journal-columns";
 import { JournalDetailSheet } from "./JournalDetailSheet";
 import { JournalEditSheet } from "./JournalEditSheet";
+import { ImageSearchPanel } from "./ImageSearchPanel";
 
 // 格式化函数
 function formatValue(value: unknown, type: ColumnDef["type"]): React.ReactNode {
@@ -141,6 +144,11 @@ export default function JournalsTable() {
   const [detailSheetOpen, setDetailSheetOpen] = useState(false);
   const [editSheetOpen, setEditSheetOpen] = useState(false);
   const [selectedJournalId, setSelectedJournalId] = useState<string | null>(null);
+
+  // 封面搜索展开行
+  const [expandedCoverRowId, setExpandedCoverRowId] = useState<string | null>(null);
+  // 封面缓存版本号，用于强制刷新封面图片
+  const [coverVersion, setCoverVersion] = useState(0);
 
   // 从 localStorage 恢复列设置
   useEffect(() => {
@@ -338,6 +346,9 @@ export default function JournalsTable() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead style={{ width: 60 }} className="text-center">
+                      封面
+                    </TableHead>
                     {visibleColumnDefs.map((col) => (
                       <TableHead
                         key={col.key}
@@ -363,65 +374,134 @@ export default function JournalsTable() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {rows.map((row) => (
-                    <TableRow key={row.id as string}>
-                      {visibleColumnDefs.map((col) => (
-                        <TableCell key={col.key} className="whitespace-nowrap">
-                          {col.key === "id" ? (
-                            <button
-                              onClick={() => {
-                                setSelectedJournalId(row.id as string);
-                                setDetailSheetOpen(true);
-                              }}
-                              className="text-primary hover:underline font-mono text-xs"
+                  {rows.map((row) => {
+                    const rowId = row.id as string;
+                    const hasCover = !!row.cover_image_name;
+                    const isExpanded = expandedCoverRowId === rowId;
+
+                    return (
+                      <React.Fragment key={rowId}>
+                        <TableRow>
+                          {/* 封面列 */}
+                          <TableCell className="text-center p-1">
+                            {hasCover ? (
+                              <button
+                                className="relative group mx-auto block w-10 h-10 rounded overflow-hidden border hover:ring-2 hover:ring-primary transition-all"
+                                onClick={() =>
+                                  setExpandedCoverRowId(isExpanded ? null : rowId)
+                                }
+                                title="点击搜索/更换封面"
+                              >
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={`/api/journals/${rowId}/cover?v=${coverVersion}`}
+                                  alt="封面"
+                                  className="w-full h-full object-cover"
+                                />
+                                {isExpanded && (
+                                  <div className="absolute inset-0 bg-primary/20 flex items-center justify-center">
+                                    <ChevronDown className="h-4 w-4 text-primary" />
+                                  </div>
+                                )}
+                              </button>
+                            ) : (
+                              <button
+                                className={`mx-auto flex items-center justify-center w-10 h-10 rounded border-2 border-dashed transition-colors ${
+                                  isExpanded
+                                    ? "border-primary bg-primary/5 text-primary"
+                                    : "border-muted-foreground/30 text-muted-foreground/50 hover:border-primary hover:text-primary hover:bg-primary/5"
+                                }`}
+                                onClick={() =>
+                                  setExpandedCoverRowId(isExpanded ? null : rowId)
+                                }
+                                title="点击搜索封面图片"
+                              >
+                                <ImageIcon className="h-4 w-4" />
+                              </button>
+                            )}
+                          </TableCell>
+                          {visibleColumnDefs.map((col) => (
+                            <TableCell key={col.key} className="whitespace-nowrap">
+                              {col.key === "id" ? (
+                                <button
+                                  onClick={() => {
+                                    setSelectedJournalId(rowId);
+                                    setDetailSheetOpen(true);
+                                  }}
+                                  className="text-primary hover:underline font-mono text-xs"
+                                >
+                                  {rowId}
+                                </button>
+                              ) : col.key === "oa_display_name" ? (
+                                <span className="line-clamp-1 max-w-[200px]" title={String(row.oa_display_name || "")}>
+                                  {String(row.oa_display_name || "-")}
+                                </span>
+                              ) : col.key === "oa_host_organization" ? (
+                                <span className="line-clamp-1 max-w-[150px]" title={String(row.oa_host_organization || "")}>
+                                  {String(row.oa_host_organization || "-")}
+                                </span>
+                              ) : (
+                                formatValue(row[col.key], col.type)
+                              )}
+                            </TableCell>
+                          ))}
+                          <TableCell>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  setSelectedJournalId(rowId);
+                                  setDetailSheetOpen(true);
+                                }}
+                              >
+                                <Eye className="mr-1 h-3 w-3" />
+                                详情
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  setSelectedJournalId(rowId);
+                                  setEditSheetOpen(true);
+                                }}
+                              >
+                                <Pencil className="mr-1 h-3 w-3" />
+                                修改
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                        {/* 展开的封面搜索面板 */}
+                        {isExpanded && (
+                          <TableRow>
+                            <TableCell
+                              colSpan={visibleColumnDefs.length + 2}
+                              className="p-0 sticky left-0"
+                              style={{ maxWidth: "calc(100vw - 4rem)" }}
                             >
-                              {row.id as string}
-                            </button>
-                          ) : col.key === "oa_display_name" ? (
-                            <span className="line-clamp-1 max-w-[200px]" title={String(row.oa_display_name || "")}>
-                              {String(row.oa_display_name || "-")}
-                            </span>
-                          ) : col.key === "oa_host_organization" ? (
-                            <span className="line-clamp-1 max-w-[150px]" title={String(row.oa_host_organization || "")}>
-                              {String(row.oa_host_organization || "-")}
-                            </span>
-                          ) : (
-                            formatValue(row[col.key], col.type)
-                          )}
-                        </TableCell>
-                      ))}
-                      <TableCell>
-                        <div className="flex items-center gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => {
-                              setSelectedJournalId(row.id as string);
-                              setDetailSheetOpen(true);
-                            }}
-                          >
-                            <Eye className="mr-1 h-3 w-3" />
-                            详情
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => {
-                              setSelectedJournalId(row.id as string);
-                              setEditSheetOpen(true);
-                            }}
-                          >
-                            <Pencil className="mr-1 h-3 w-3" />
-                            修改
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                              <ImageSearchPanel
+                                journalId={rowId}
+                                journalName={String(row.oa_display_name || row.cr_title || row.doaj_title || "")}
+                                onUploaded={() => {
+                                  // 刷新封面版本号，强制重新加载图片
+                                  setCoverVersion((v) => v + 1);
+                                  setExpandedCoverRowId(null);
+                                  // 刷新列表数据（更新 cover_image_name 字段）
+                                  setAppliedFilters({ ...appliedFilters });
+                                }}
+                                onClose={() => setExpandedCoverRowId(null)}
+                              />
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
                   {rows.length === 0 && !loading && (
                     <TableRow>
                       <TableCell
-                        colSpan={visibleColumnDefs.length + 1}
+                        colSpan={visibleColumnDefs.length + 2}
                         className="h-24 text-center text-muted-foreground"
                       >
                         暂无数据（请先在控制面板运行抓取任务）
@@ -431,7 +511,7 @@ export default function JournalsTable() {
                   {loading && (
                     <TableRow>
                       <TableCell
-                        colSpan={visibleColumnDefs.length + 1}
+                        colSpan={visibleColumnDefs.length + 2}
                         className="h-24 text-center"
                       >
                         <Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" />

@@ -35,7 +35,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ issn: stri
   });
 }
 
-// 上传封面图片
+// 上传封面图片（支持 FormData 文件上传 和 JSON URL 上传两种方式）
 export async function POST(req: Request, { params }: { params: Promise<{ issn: string }> }) {
   const { issn: idOrIssn } = await params;
   
@@ -45,47 +45,108 @@ export async function POST(req: Request, { params }: { params: Promise<{ issn: s
     return Response.json({ error: "Journal not found" }, { status: 404 });
   }
   
+  const contentType = req.headers.get("content-type") ?? "";
+  
   try {
-    const formData = await req.formData();
-    const file = formData.get("file") as File | null;
+    let buffer: Buffer;
+    let mimeType: string;
+    let fileName: string;
     
-    if (!file) {
-      return Response.json({ error: "No file provided" }, { status: 400 });
+    if (contentType.includes("application/json")) {
+      // === JSON 方式：通过 URL 下载图片 ===
+      const body = await req.json();
+      const imageUrl = body.imageUrl;
+      
+      if (!imageUrl || typeof imageUrl !== "string") {
+        return Response.json({ error: "Missing imageUrl in request body" }, { status: 400 });
+      }
+      
+      // 从 URL 下载图片
+      const imgRes = await fetch(imageUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; JournalCoverBot/1.0)",
+          "Accept": "image/*",
+        },
+        signal: AbortSignal.timeout(15000), // 15 秒超时
+      });
+      
+      if (!imgRes.ok) {
+        return Response.json(
+          { error: `Failed to download image: HTTP ${imgRes.status}` },
+          { status: 502 }
+        );
+      }
+      
+      // 检测 MIME 类型
+      mimeType = imgRes.headers.get("content-type")?.split(";")[0]?.trim() ?? "image/jpeg";
+      if (!ALLOWED_TYPES.includes(mimeType)) {
+        // 尝试从 URL 推断
+        const ext = imageUrl.split("?")[0].split(".").pop()?.toLowerCase();
+        const extMap: Record<string, string> = {
+          jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+          gif: "image/gif", webp: "image/webp",
+        };
+        mimeType = (ext && extMap[ext]) || "image/jpeg";
+      }
+      
+      const arrayBuffer = await imgRes.arrayBuffer();
+      buffer = Buffer.from(arrayBuffer);
+      
+      if (buffer.length > MAX_SIZE) {
+        return Response.json(
+          { error: `Image too large (${(buffer.length / 1024 / 1024).toFixed(1)}MB). Maximum: ${MAX_SIZE / 1024 / 1024}MB` },
+          { status: 400 }
+        );
+      }
+      
+      // 从 URL 提取文件名
+      const urlPath = new URL(imageUrl).pathname;
+      fileName = urlPath.split("/").pop() || "cover.jpg";
+      
+    } else {
+      // === FormData 方式：传统文件上传 ===
+      const formData = await req.formData();
+      const file = formData.get("file") as File | null;
+      
+      if (!file) {
+        return Response.json({ error: "No file provided" }, { status: 400 });
+      }
+      
+      // 验证文件类型
+      if (!ALLOWED_TYPES.includes(file.type)) {
+        return Response.json({ 
+          error: "Invalid file type. Allowed: JPEG, PNG, GIF, WebP" 
+        }, { status: 400 });
+      }
+      
+      // 验证文件大小
+      if (file.size > MAX_SIZE) {
+        return Response.json({ 
+          error: `File too large. Maximum size: ${MAX_SIZE / 1024 / 1024}MB` 
+        }, { status: 400 });
+      }
+      
+      const arrayBuffer = await file.arrayBuffer();
+      buffer = Buffer.from(arrayBuffer);
+      mimeType = file.type;
+      fileName = file.name;
     }
-    
-    // 验证文件类型
-    if (!ALLOWED_TYPES.includes(file.type)) {
-      return Response.json({ 
-        error: "Invalid file type. Allowed: JPEG, PNG, GIF, WebP" 
-      }, { status: 400 });
-    }
-    
-    // 验证文件大小
-    if (file.size > MAX_SIZE) {
-      return Response.json({ 
-        error: `File too large. Maximum size: ${MAX_SIZE / 1024 / 1024}MB` 
-      }, { status: 400 });
-    }
-    
-    // 读取文件内容
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
     
     // 保存到数据库
     const success = await updateJournalCoverImage(
       detail.journal.id,
       buffer,
-      file.type,
-      file.name
+      mimeType,
+      fileName
     );
     
     if (success) {
       return Response.json({ 
         success: true, 
         message: "Cover image uploaded successfully",
-        fileName: file.name,
-        mimeType: file.type,
-        size: file.size,
+        fileName,
+        mimeType,
+        size: buffer.length,
       });
     } else {
       return Response.json({ error: "Failed to save cover image" }, { status: 500 });

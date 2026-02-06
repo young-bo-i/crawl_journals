@@ -11,22 +11,54 @@ import {
   Info,
   CheckCircle,
   XCircle,
+  ImageIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 
+// ===== 消息提示组件 =====
+function StatusMessage({ message }: { message: { type: "success" | "error"; text: string } | null }) {
+  if (!message) return null;
+  return (
+    <div
+      className={`rounded-lg border p-4 flex items-center gap-3 ${
+        message.type === "success"
+          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-500"
+          : "border-destructive/30 bg-destructive/10 text-destructive"
+      }`}
+    >
+      {message.type === "success" ? (
+        <CheckCircle className="h-5 w-5" />
+      ) : (
+        <XCircle className="h-5 w-5" />
+      )}
+      <span className="text-sm">{message.text}</span>
+    </div>
+  );
+}
+
 export default function SettingsPage() {
+  // ===== OpenAlex 配置 =====
   const [keys, setKeys] = useState<string[]>([""]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
+  // ===== Google 图片搜索配置 =====
+  const [googleApiKey, setGoogleApiKey] = useState("");
+  const [googleCx, setGoogleCx] = useState("");
+  const [googleLoading, setGoogleLoading] = useState(true);
+  const [googleSaving, setGoogleSaving] = useState(false);
+  const [googleMessage, setGoogleMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
   useEffect(() => {
     loadConfig();
+    loadGoogleConfig();
   }, []);
 
+  // ===== OpenAlex 相关方法 =====
   async function loadConfig() {
     setLoading(true);
     try {
@@ -86,7 +118,51 @@ export default function SettingsPage() {
     setKeys(newKeys);
   }
 
-  if (loading) {
+  // ===== Google 图片搜索相关方法 =====
+  async function loadGoogleConfig() {
+    setGoogleLoading(true);
+    try {
+      const res = await fetch("/api/settings/google-search", { cache: "no-store" });
+      const json = await res.json();
+      if (json?.ok && json?.config) {
+        setGoogleApiKey(json.config.apiKey || "");
+        setGoogleCx(json.config.cx || "");
+      }
+    } catch (err) {
+      console.error("加载 Google 配置失败:", err);
+    } finally {
+      setGoogleLoading(false);
+    }
+  }
+
+  async function saveGoogleConfig() {
+    setGoogleSaving(true);
+    setGoogleMessage(null);
+    try {
+      const res = await fetch("/api/settings/google-search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ apiKey: googleApiKey, cx: googleCx }),
+      });
+      const json = await res.json();
+
+      if (json?.ok) {
+        setGoogleMessage({ type: "success", text: "保存成功！" });
+        if (json?.config) {
+          setGoogleApiKey(json.config.apiKey || "");
+          setGoogleCx(json.config.cx || "");
+        }
+      } else {
+        setGoogleMessage({ type: "error", text: json?.error ?? "保存失败" });
+      }
+    } catch (err: unknown) {
+      setGoogleMessage({ type: "error", text: err instanceof Error ? err.message : "保存失败" });
+    } finally {
+      setGoogleSaving(false);
+    }
+  }
+
+  if (loading || googleLoading) {
     return (
       <div className="flex items-center justify-center py-12">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -180,23 +256,7 @@ export default function SettingsPage() {
 
           <Separator />
 
-          {/* Message */}
-          {message && (
-            <div
-              className={`rounded-lg border p-4 flex items-center gap-3 ${
-                message.type === "success"
-                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-500"
-                  : "border-destructive/30 bg-destructive/10 text-destructive"
-              }`}
-            >
-              {message.type === "success" ? (
-                <CheckCircle className="h-5 w-5" />
-              ) : (
-                <XCircle className="h-5 w-5" />
-              )}
-              <span className="text-sm">{message.text}</span>
-            </div>
-          )}
+          <StatusMessage message={message} />
 
           {/* Save Button */}
           <Button onClick={saveConfig} disabled={saving}>
@@ -206,6 +266,104 @@ export default function SettingsPage() {
               <Save className="mr-2 h-4 w-4" />
             )}
             {saving ? "保存中..." : "保存配置"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Google 图片搜索配置 */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <ImageIcon className="h-5 w-5" />
+            <CardTitle>Google 图片搜索</CardTitle>
+          </div>
+          <CardDescription>
+            配置 Google Custom Search API，用于搜索期刊封面图片（可选）
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* Info */}
+          <div className="rounded-lg bg-muted/50 p-4 space-y-2">
+            <div className="flex items-start gap-2 text-sm">
+              <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+              <p className="text-muted-foreground">
+                <strong>不配置也可使用</strong> —— 系统默认通过爬虫方式抓取 Google 图片搜索结果，无需任何密钥。但爬虫方式在频繁使用时可能被 Google 限流。
+              </p>
+            </div>
+            <div className="flex items-start gap-2 text-sm">
+              <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+              <p className="text-muted-foreground">
+                如需更稳定的搜索体验，可配置 Google Custom Search API Key（免费额度：每天 100 次搜索）。配置后系统将优先使用官方 API。
+              </p>
+            </div>
+            <div className="flex items-start gap-2 text-sm">
+              <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+              <div className="text-muted-foreground space-y-1">
+                <p>API Key 获取步骤：</p>
+                <ol className="list-decimal list-inside ml-1 space-y-0.5">
+                  <li>
+                    访问{" "}
+                    <a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                      Google Cloud Console
+                    </a>
+                    {" "}创建项目，启用 Custom Search JSON API，创建 API Key
+                  </li>
+                  <li>
+                    访问{" "}
+                    <a href="https://cse.google.com/cse/all" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                      Google Programmable Search Engine
+                    </a>
+                    {" "}创建搜索引擎，开启「搜索整个网络」和「图片搜索」，获取搜索引擎 ID
+                  </li>
+                </ol>
+              </div>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Fields */}
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">API Key</label>
+              <Input
+                type="password"
+                value={googleApiKey}
+                onChange={(e) => setGoogleApiKey(e.target.value)}
+                placeholder="输入 Google API Key"
+                className="font-mono"
+              />
+              <p className="text-xs text-muted-foreground">
+                在 Google Cloud Console 中创建的 API 密钥
+              </p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">搜索引擎 ID (CX)</label>
+              <Input
+                type="text"
+                value={googleCx}
+                onChange={(e) => setGoogleCx(e.target.value)}
+                placeholder="输入 Custom Search Engine ID"
+                className="font-mono"
+              />
+              <p className="text-xs text-muted-foreground">
+                在 Google Programmable Search Engine 中获取的搜索引擎 ID
+              </p>
+            </div>
+          </div>
+
+          <Separator />
+
+          <StatusMessage message={googleMessage} />
+
+          {/* Save Button */}
+          <Button onClick={saveGoogleConfig} disabled={googleSaving}>
+            {googleSaving ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="mr-2 h-4 w-4" />
+            )}
+            {googleSaving ? "保存中..." : "保存配置"}
           </Button>
         </CardContent>
       </Card>
