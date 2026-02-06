@@ -21,7 +21,9 @@ import {
   StopCircle,
   LayoutGrid,
   LayoutList,
+  CloudDownload,
 } from "lucide-react";
+import { useWebSocket } from "@/lib/useWebSocket";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -205,7 +207,7 @@ export default function JournalsTable() {
   // 封面缓存版本号，用于强制刷新封面图片
   const [coverVersion, setCoverVersion] = useState(0);
 
-  // 批量抓取封面
+  // 批量抓取封面（当前页，前端驱动）
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{
     current: number;
@@ -215,6 +217,20 @@ export default function JournalsTable() {
     failCount: number;
   } | null>(null);
   const batchStopRef = useRef(false);
+
+  // 后台异步批量抓取封面（全量，后端驱动 + WebSocket 推送）
+  const [asyncBatchProgress, setAsyncBatchProgress] = useState<{
+    taskId: string;
+    status: "running" | "completed" | "stopped" | "error";
+    total: number;
+    current: number;
+    successCount: number;
+    failCount: number;
+    skipCount: number;
+    currentName: string;
+    error?: string;
+  } | null>(null);
+  const [asyncBatchStarting, setAsyncBatchStarting] = useState(false);
 
   // 视图模式
   const [viewMode, setViewMode] = useState<"table" | "grid">("table");
@@ -469,6 +485,89 @@ export default function JournalsTable() {
     setBatchRunning(false);
   }, [rows]);
 
+  // ===== 后台异步批量封面抓取 =====
+
+  // WebSocket 监听后台进度
+  useWebSocket({
+    onMessage: useCallback((msg: { type: string; [key: string]: any }) => {
+      if (msg.type === "batch_cover_event" && msg.event) {
+        setAsyncBatchProgress(msg.event);
+        // 任务完成后刷新列表
+        if (msg.event.status === "completed" || msg.event.status === "stopped") {
+          setCoverVersion((v) => v + 1);
+          setAppliedFilters((prev) => ({ ...prev }));
+        }
+      }
+    }, []),
+  });
+
+  // 页面加载时查询后台任务状态
+  useEffect(() => {
+    fetch("/api/batch-cover", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.ok && data.status) {
+          setAsyncBatchProgress(data.status);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // 启动后台异步批量抓取
+  const handleAsyncBatchCover = useCallback(async () => {
+    setAsyncBatchStarting(true);
+    try {
+      // 构建当前筛选条件
+      const filterMap: Record<string, string> = {};
+      if (appliedFilters.q) filterMap.q = appliedFilters.q;
+
+      const boolMap: Record<string, string> = {
+        inDoaj: "inDoaj", inNlm: "inNlm", hasWikidata: "hasWikidata",
+        hasWikipedia: "hasWikipedia", isOpenAccess: "isOpenAccess",
+        isCore: "isCore", isOa: "isOa", inScielo: "inScielo",
+        isOjs: "isOjs", doajBoai: "doajBoai", inScimago: "inScimago",
+        hasCover: "hasCover",
+      };
+      for (const [key, param] of Object.entries(boolMap)) {
+        const value = appliedFilters[key as keyof JournalFiltersState];
+        if (value === "yes") filterMap[param] = "true";
+        else if (value === "no") filterMap[param] = "false";
+      }
+      if (appliedFilters.country) filterMap.country = appliedFilters.country;
+      if (appliedFilters.oaType && appliedFilters.oaType !== "all") filterMap.oaType = appliedFilters.oaType;
+      if (appliedFilters.minWorksCount) filterMap.minWorksCount = appliedFilters.minWorksCount;
+      if (appliedFilters.maxWorksCount) filterMap.maxWorksCount = appliedFilters.maxWorksCount;
+      if (appliedFilters.minCitedByCount) filterMap.minCitedByCount = appliedFilters.minCitedByCount;
+      if (appliedFilters.maxCitedByCount) filterMap.maxCitedByCount = appliedFilters.maxCitedByCount;
+      if (appliedFilters.minFirstYear) filterMap.minFirstYear = appliedFilters.minFirstYear;
+      if (appliedFilters.maxFirstYear) filterMap.maxFirstYear = appliedFilters.maxFirstYear;
+
+      const res = await fetch("/api/batch-cover", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filters: filterMap }),
+      });
+      const data = await res.json();
+
+      if (!data.ok) {
+        alert(data.error || "启动失败");
+      }
+    } catch (err: any) {
+      alert(err?.message || "请求失败");
+    } finally {
+      setAsyncBatchStarting(false);
+    }
+  }, [appliedFilters]);
+
+  // 停止后台异步批量抓取
+  const handleStopAsyncBatch = useCallback(async () => {
+    try {
+      await fetch("/api/batch-cover", { method: "DELETE" });
+    } catch {
+      // ignore
+    }
+  }, []);
+
   // 导出 URL
   const exportUrl = useMemo(() => {
     return `/api/journals/export.xlsx?${buildQueryParams()}`;
@@ -580,7 +679,7 @@ export default function JournalsTable() {
               <p className="text-sm text-muted-foreground">
                 {loading ? "加载中..." : `共 ${total.toLocaleString()} 条结果`}
               </p>
-              {/* 批量抓取封面按钮 */}
+              {/* 批量抓取封面按钮（当前页） */}
               {!batchRunning ? (
                 <Button
                   variant="outline"
@@ -590,7 +689,7 @@ export default function JournalsTable() {
                   className="gap-1"
                 >
                   <PlayCircle className="h-3.5 w-3.5" />
-                  批量抓取封面
+                  当前页抓取
                   {rows.filter((r) => !r.cover_image_name).length > 0 && (
                     <Badge variant="secondary" className="ml-1">
                       {rows.filter((r) => !r.cover_image_name).length}
@@ -608,6 +707,34 @@ export default function JournalsTable() {
                 >
                   <StopCircle className="h-3.5 w-3.5" />
                   停止
+                </Button>
+              )}
+
+              {/* 后台全量抓取封面按钮 */}
+              {asyncBatchProgress?.status !== "running" ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAsyncBatchCover}
+                  disabled={loading || asyncBatchStarting}
+                  className="gap-1"
+                >
+                  {asyncBatchStarting ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <CloudDownload className="h-3.5 w-3.5" />
+                  )}
+                  后台全量抓取
+                </Button>
+              ) : (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleStopAsyncBatch}
+                  className="gap-1"
+                >
+                  <StopCircle className="h-3.5 w-3.5" />
+                  停止后台任务
                 </Button>
               )}
             </div>
@@ -648,7 +775,7 @@ export default function JournalsTable() {
             {batchProgress && !batchRunning && (
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span>
-                  批量完成：成功 {batchProgress.successCount}，失败{" "}
+                  当前页完成：成功 {batchProgress.successCount}，失败{" "}
                   {batchProgress.failCount}
                 </span>
                 <Button
@@ -656,6 +783,74 @@ export default function JournalsTable() {
                   size="sm"
                   className="h-6 px-2"
                   onClick={() => setBatchProgress(null)}
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              </div>
+            )}
+
+            {/* 后台异步批量进度 */}
+            {asyncBatchProgress && asyncBatchProgress.status === "running" && (
+              <div className="flex items-center gap-3 flex-1 min-w-[260px]">
+                <div className="flex-1">
+                  <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
+                    <span className="flex items-center gap-1">
+                      <CloudDownload className="h-3 w-3" />
+                      <span className="truncate max-w-[180px]">
+                        {asyncBatchProgress.currentName || "准备中..."}
+                      </span>
+                    </span>
+                    <span className="tabular-nums">
+                      {asyncBatchProgress.current}/{asyncBatchProgress.total}
+                    </span>
+                  </div>
+                  <div className="h-2 bg-muted rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-blue-500 rounded-full transition-all duration-300"
+                      style={{
+                        width: `${asyncBatchProgress.total > 0
+                          ? (asyncBatchProgress.current / asyncBatchProgress.total) * 100
+                          : 0}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="flex gap-3 text-xs mt-1">
+                    <span className="text-emerald-600">
+                      成功 {asyncBatchProgress.successCount}
+                    </span>
+                    <span className="text-red-500">
+                      失败 {asyncBatchProgress.failCount}
+                    </span>
+                    {asyncBatchProgress.skipCount > 0 && (
+                      <span className="text-muted-foreground">
+                        跳过 {asyncBatchProgress.skipCount}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 后台异步批量完成/停止/错误结果 */}
+            {asyncBatchProgress && asyncBatchProgress.status !== "running" && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <CloudDownload className="h-3 w-3" />
+                <span>
+                  {asyncBatchProgress.status === "completed"
+                    ? "后台完成"
+                    : asyncBatchProgress.status === "stopped"
+                      ? "后台已停止"
+                      : "后台出错"}
+                  ：成功 {asyncBatchProgress.successCount}，失败{" "}
+                  {asyncBatchProgress.failCount}
+                  {asyncBatchProgress.skipCount > 0 &&
+                    `，跳过 ${asyncBatchProgress.skipCount}`}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2"
+                  onClick={() => setAsyncBatchProgress(null)}
                 >
                   <X className="h-3 w-3" />
                 </Button>

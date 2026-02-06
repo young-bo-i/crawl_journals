@@ -9,10 +9,11 @@ export const runtime = "nodejs";
 /**
  * Google 图片搜索 API
  *
- * 三种模式（在系统设置中切换）：
+ * 四种模式（在系统设置中切换）：
  *   1. scraper_proxy  — 直接爬 Google Images + SOCKS5 代理轮询（默认）
  *   2. google_api     — Google Custom Search 官方 API（多 Key 轮询）
  *   3. scraper_api    — 通过 ScraperAPI 第三方服务爬取（多 Key 轮询）
+ *   4. serper_api     — 通过 Serper.dev API 搜索（推荐，返回结构化 JSON）
  */
 
 export type ImageSearchResult = {
@@ -29,6 +30,7 @@ type GoogleSearchConfig = {
   apiKeys: Array<{ apiKey: string; cx: string }>;
   proxies: string[];
   scraperApiKeys: string[];
+  serperApiKeys: string[];
 };
 
 // ============================================================
@@ -37,6 +39,7 @@ type GoogleSearchConfig = {
 let apiKeyIndex = 0;
 let proxyIndex = 0;
 let scraperKeyIndex = 0;
+let serperKeyIndex = 0;
 
 // ============================================================
 // 从数据库读取配置
@@ -48,6 +51,7 @@ async function getConfig(): Promise<GoogleSearchConfig> {
     apiKeys: [],
     proxies: [],
     scraperApiKeys: [],
+    serperApiKeys: [],
   };
   try {
     const row = await queryOne<RowDataPacket>(
@@ -57,7 +61,7 @@ async function getConfig(): Promise<GoogleSearchConfig> {
     const raw = JSON.parse(row.value);
 
     const method: ImageSearchMethod =
-      raw.method && ["scraper_proxy", "google_api", "scraper_api"].includes(raw.method)
+      raw.method && ["scraper_proxy", "google_api", "scraper_api", "serper_api"].includes(raw.method)
         ? raw.method
         : raw.apiKeys?.length
           ? "google_api"
@@ -68,6 +72,7 @@ async function getConfig(): Promise<GoogleSearchConfig> {
       apiKeys: Array.isArray(raw.apiKeys) ? raw.apiKeys.filter((k: any) => k?.apiKey && k?.cx) : [],
       proxies: Array.isArray(raw.proxies) ? raw.proxies.filter(Boolean) : [],
       scraperApiKeys: Array.isArray(raw.scraperApiKeys) ? raw.scraperApiKeys.filter(Boolean) : [],
+      serperApiKeys: Array.isArray(raw.serperApiKeys) ? raw.serperApiKeys.filter(Boolean) : [],
     };
   } catch (err) {
     console.error("[image-search] Failed to read config:", err);
@@ -370,6 +375,59 @@ async function searchViaScraperApi(
 }
 
 // ============================================================
+// 模式四：Serper.dev API（serper_api）—— 推荐
+// 直接返回结构化 JSON，无需解析 HTML，速度快（1-2 秒）
+// 免费 2,500 次/月，之后 $0.30/千次
+// ============================================================
+
+async function searchViaSerper(
+  query: string,
+  serperApiKeys: string[]
+): Promise<ImageSearchResult[]> {
+  const key = serperApiKeys[serperKeyIndex % serperApiKeys.length];
+  serperKeyIndex++;
+
+  console.log(
+    `[image-search] serper_api using key #${((serperKeyIndex - 1) % serperApiKeys.length) + 1}`
+  );
+
+  const res = await fetch("https://google.serper.dev/images", {
+    method: "POST",
+    headers: {
+      "X-API-KEY": key,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      q: query,
+      num: 20,
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (res.status === 429) {
+    throw new Error("RATE_LIMITED");
+  }
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    console.error(`[image-search] Serper API error:`, res.status, errText.substring(0, 200));
+    throw new Error(`SERPER_API_FAILED:${res.status}`);
+  }
+
+  const data = await res.json();
+  const images: any[] = data.images ?? [];
+
+  return images.map((img) => ({
+    url: img.imageUrl ?? "",
+    thumbnail: img.thumbnailUrl ?? img.imageUrl ?? "",
+    title: img.title ?? "",
+    width: img.imageWidth ?? 0,
+    height: img.imageHeight ?? 0,
+    contextUrl: img.link ?? "",
+  }));
+}
+
+// ============================================================
 // GET /api/image-search?q=...
 // ============================================================
 
@@ -394,6 +452,9 @@ export async function GET(req: Request) {
   if (method === "scraper_api" && config.scraperApiKeys.length === 0) {
     method = "scraper_proxy"; // 没有 ScraperAPI Key，降级到爬虫
   }
+  if (method === "serper_api" && config.serperApiKeys.length === 0) {
+    method = "scraper_proxy"; // 没有 Serper Key，降级到爬虫
+  }
 
   try {
     let items: ImageSearchResult[];
@@ -411,6 +472,13 @@ export async function GET(req: Request) {
           `[image-search] Using ScraperAPI (${config.scraperApiKeys.length} key(s))`
         );
         items = await searchViaScraperApi(q, config.scraperApiKeys);
+        break;
+
+      case "serper_api":
+        console.log(
+          `[image-search] Using Serper.dev API (${config.serperApiKeys.length} key(s))`
+        );
+        items = await searchViaSerper(q, config.serperApiKeys);
         break;
 
       case "scraper_proxy":
@@ -444,7 +512,11 @@ export async function GET(req: Request) {
       );
     }
 
-    if (message.startsWith("SCRAPE_FAILED") || message.startsWith("SCRAPER_API_FAILED")) {
+    if (
+      message.startsWith("SCRAPE_FAILED") ||
+      message.startsWith("SCRAPER_API_FAILED") ||
+      message.startsWith("SERPER_API_FAILED")
+    ) {
       return Response.json(
         {
           error: "scrape_failed",

@@ -11,23 +11,26 @@ export const runtime = "nodejs";
  *   - "scraper_proxy" : 直接爬虫 + SOCKS5 代理（默认）
  *   - "google_api"    : Google Custom Search 官方 API
  *   - "scraper_api"   : ScraperAPI 第三方代理搜索
+ *   - "serper_api"    : Serper.dev Google Images API（推荐）
  *
  * apiKeys: Google Custom Search API Key + CX 组，轮询使用
  * proxies: SOCKS5 代理地址列表，爬虫模式轮询使用
  * scraperApiKeys: ScraperAPI 的 API Key 列表，轮询使用
+ * serperApiKeys: Serper.dev 的 API Key 列表，轮询使用
  */
-export type ImageSearchMethod = "scraper_proxy" | "google_api" | "scraper_api";
+export type ImageSearchMethod = "scraper_proxy" | "google_api" | "scraper_api" | "serper_api";
 
 export type GoogleSearchConfig = {
   method: ImageSearchMethod;
   apiKeys: Array<{ apiKey: string; cx: string }>;
   proxies: string[];
   scraperApiKeys: string[];
+  serperApiKeys: string[];
 };
 
 const CONFIG_KEY = "google_search_config";
 
-const VALID_METHODS: ImageSearchMethod[] = ["scraper_proxy", "google_api", "scraper_api"];
+const VALID_METHODS: ImageSearchMethod[] = ["scraper_proxy", "google_api", "scraper_api", "serper_api"];
 
 // 兼容旧格式 {apiKey, cx} -> 新格式
 function normalizeConfig(raw: any): GoogleSearchConfig {
@@ -36,6 +39,7 @@ function normalizeConfig(raw: any): GoogleSearchConfig {
     apiKeys: [],
     proxies: [],
     scraperApiKeys: [],
+    serperApiKeys: [],
   };
 
   if (!raw) return defaults;
@@ -45,7 +49,6 @@ function normalizeConfig(raw: any): GoogleSearchConfig {
   if (raw.method && VALID_METHODS.includes(raw.method)) {
     method = raw.method;
   } else if (Array.isArray(raw.apiKeys) && raw.apiKeys.length > 0) {
-    // 旧配置兼容：有 apiKeys → 推断为 google_api
     method = "google_api";
   }
 
@@ -64,7 +67,11 @@ function normalizeConfig(raw: any): GoogleSearchConfig {
     ? raw.scraperApiKeys.filter((k: string) => !!k)
     : [];
 
-  return { method, apiKeys, proxies, scraperApiKeys };
+  const serperApiKeys = Array.isArray(raw.serperApiKeys)
+    ? raw.serperApiKeys.filter((k: string) => !!k)
+    : [];
+
+  return { method, apiKeys, proxies, scraperApiKeys, serperApiKeys };
 }
 
 /**
@@ -123,7 +130,13 @@ export async function POST(req: Request) {
           .filter(Boolean)
       : [];
 
-    const config: GoogleSearchConfig = { method, apiKeys, proxies, scraperApiKeys };
+    const serperApiKeys: string[] = Array.isArray(body.serperApiKeys)
+      ? body.serperApiKeys
+          .map((k: any) => (typeof k === "string" ? k.trim() : ""))
+          .filter(Boolean)
+      : [];
+
+    const config: GoogleSearchConfig = { method, apiKeys, proxies, scraperApiKeys, serperApiKeys };
     const now = nowLocal();
 
     await execute(

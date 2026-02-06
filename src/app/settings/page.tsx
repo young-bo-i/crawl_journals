@@ -56,11 +56,12 @@ export default function SettingsPage() {
   const [nlmMessage, setNlmMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // ===== Google 图片搜索配置 =====
-  type ImageSearchMethod = "scraper_proxy" | "google_api" | "scraper_api";
+  type ImageSearchMethod = "scraper_proxy" | "google_api" | "scraper_api" | "serper_api";
   const [googleMethod, setGoogleMethod] = useState<ImageSearchMethod>("scraper_proxy");
   const [googleApiKeys, setGoogleApiKeys] = useState<Array<{ apiKey: string; cx: string }>>([]);
   const [googleProxies, setGoogleProxies] = useState<string[]>([]);
   const [scraperApiKeys, setScraperApiKeys] = useState<string[]>([]);
+  const [serperApiKeys, setSerperApiKeys] = useState<string[]>([]);
   const [googleLoading, setGoogleLoading] = useState(true);
   const [googleSaving, setGoogleSaving] = useState(false);
   const [googleMessage, setGoogleMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -204,6 +205,7 @@ export default function SettingsPage() {
         setGoogleApiKeys(json.config.apiKeys?.length > 0 ? json.config.apiKeys : []);
         setGoogleProxies(json.config.proxies?.length > 0 ? json.config.proxies : []);
         setScraperApiKeys(json.config.scraperApiKeys?.length > 0 ? json.config.scraperApiKeys : []);
+        setSerperApiKeys(json.config.serperApiKeys?.length > 0 ? json.config.serperApiKeys : []);
       }
     } catch (err) {
       console.error("加载 Google 配置失败:", err);
@@ -224,6 +226,7 @@ export default function SettingsPage() {
           apiKeys: googleApiKeys,
           proxies: googleProxies,
           scraperApiKeys,
+          serperApiKeys,
         }),
       });
       const json = await res.json();
@@ -235,6 +238,7 @@ export default function SettingsPage() {
           setGoogleApiKeys(json.config.apiKeys ?? []);
           setGoogleProxies(json.config.proxies ?? []);
           setScraperApiKeys(json.config.scraperApiKeys ?? []);
+          setSerperApiKeys(json.config.serperApiKeys ?? []);
         }
       } else {
         setGoogleMessage({ type: "error", text: json?.error ?? "保存失败" });
@@ -270,6 +274,19 @@ export default function SettingsPage() {
     const updated = [...scraperApiKeys];
     updated[index] = value;
     setScraperApiKeys(updated);
+  }
+
+  // Serper API Key 操作
+  function addSerperApiKey() {
+    setSerperApiKeys([...serperApiKeys, ""]);
+  }
+  function removeSerperApiKey(index: number) {
+    setSerperApiKeys(serperApiKeys.filter((_, i) => i !== index));
+  }
+  function updateSerperApiKey(index: number, value: string) {
+    const updated = [...serperApiKeys];
+    updated[index] = value;
+    setSerperApiKeys(updated);
   }
 
   // SOCKS5 代理操作
@@ -573,8 +590,14 @@ export default function SettingsPage() {
           {/* 搜索方式选择 */}
           <div className="space-y-3">
             <label className="text-sm font-medium">搜索方式</label>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               {([
+                {
+                  value: "serper_api" as ImageSearchMethod,
+                  label: "Serper.dev",
+                  desc: "结构化 JSON 返回，速度快（1-2s），推荐使用",
+                  tag: "推荐",
+                },
                 {
                   value: "scraper_proxy" as ImageSearchMethod,
                   label: "直接爬虫",
@@ -591,7 +614,7 @@ export default function SettingsPage() {
                   value: "scraper_api" as ImageSearchMethod,
                   label: "ScraperAPI",
                   desc: "第三方代理服务，自动处理反爬和 IP 轮换",
-                  tag: "试用5000次",
+                  tag: "5 credits/次",
                 },
               ]).map((opt) => (
                 <button
@@ -748,6 +771,78 @@ export default function SettingsPage() {
                       size="icon"
                       className="h-8 w-8 shrink-0 mt-0.5"
                       onClick={() => removeGoogleApiKey(index)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ===== Serper.dev 配置 ===== */}
+          {googleMethod === "serper_api" && (
+            <div className="space-y-4">
+              <div className="rounded-lg bg-muted/50 p-4 space-y-2">
+                <div className="flex items-start gap-2 text-sm">
+                  <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+                  <p className="text-muted-foreground">
+                    <a href="https://serper.dev" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline font-medium">
+                      Serper.dev
+                    </a>
+                    {" "}是最快、最便宜的 Google 搜索 API。直接返回结构化 JSON 数据，无需解析 HTML，响应速度 1-2 秒。
+                  </p>
+                </div>
+                <div className="flex items-start gap-2 text-sm">
+                  <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+                  <p className="text-muted-foreground">
+                    免费 <strong>2,500 次/月</strong>，无需信用卡。之后 $0.30/千次。
+                    可配置多个 Key 轮询以分散用量。
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 text-sm">
+                  <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <span className="text-muted-foreground">注册获取 API Key：</span>
+                  <a
+                    href="https://serper.dev/dashboard"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary hover:underline"
+                  >
+                    serper.dev/dashboard
+                  </a>
+                </div>
+              </div>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium">API Key 列表（轮询使用）</label>
+                  <Button variant="outline" size="sm" onClick={addSerperApiKey}>
+                    <Plus className="mr-1 h-3.5 w-3.5" />
+                    添加
+                  </Button>
+                </div>
+                {serperApiKeys.length === 0 && (
+                  <p className="text-xs text-muted-foreground py-2">
+                    请添加至少一个 Serper API Key
+                  </p>
+                )}
+                {serperApiKeys.map((key, index) => (
+                  <div key={index} className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground w-6 shrink-0 text-center">
+                      {index + 1}
+                    </span>
+                    <Input
+                      type="password"
+                      value={key}
+                      onChange={(e) => updateSerperApiKey(index, e.target.value)}
+                      placeholder="Serper API Key"
+                      className="font-mono flex-1 h-8 text-sm"
+                    />
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-8 w-8 shrink-0"
+                      onClick={() => removeSerperApiKey(index)}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>

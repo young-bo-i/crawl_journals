@@ -7,6 +7,7 @@ export type WsMessage =
   | { type: "connected"; clientId: string }
   | { type: "status"; data: any }
   | { type: "crawl_event"; event: CrawlEvent }
+  | { type: "batch_cover_event"; event: any }
   | { type: "error"; message: string };
 
 type ClientInfo = {
