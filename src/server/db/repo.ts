@@ -818,26 +818,35 @@ export async function queryJournals(args: QueryJournalsArgs): Promise<{ total: n
   // 封面图片筛选（使用 cover_image_name 而非 BLOB 列 cover_image，可走索引）
   if (args.hasCover !== undefined) {
     if (args.hasCover) {
-      where.push("cover_image_name IS NOT NULL");
+      where.push("journals.cover_image_name IS NOT NULL");
     } else {
-      where.push("cover_image_name IS NULL");
+      where.push("journals.cover_image_name IS NULL");
     }
   }
 
-  // SCImago 优先期刊筛选（通过 issn_l 与 scimago_issn_index 关联）
+  // SCImago 筛选：使用 JOIN 替代 EXISTS 关联子查询，避免逐行扫描
+  const joins: string[] = [];
   if (args.inScimago !== undefined) {
     if (args.inScimago) {
-      where.push("EXISTS (SELECT 1 FROM scimago_issn_index si WHERE si.issn = journals.issn_l)");
+      // INNER JOIN 只保留在 scimago 中存在的期刊
+      joins.push(
+        "INNER JOIN (SELECT DISTINCT issn FROM scimago_issn_index) _sci ON _sci.issn = journals.issn_l"
+      );
     } else {
-      where.push("NOT EXISTS (SELECT 1 FROM scimago_issn_index si WHERE si.issn = journals.issn_l)");
+      // LEFT JOIN + IS NULL 反连接，筛选不在 scimago 中的期刊
+      joins.push(
+        "LEFT JOIN (SELECT DISTINCT issn FROM scimago_issn_index) _sci ON _sci.issn = journals.issn_l"
+      );
+      where.push("_sci.issn IS NULL");
     }
   }
 
+  const joinSql = joins.length ? joins.join(" ") : "";
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   
   // 统计总数
   const countRow = await queryOne<RowDataPacket>(
-    `SELECT COUNT(1) as c FROM journals ${whereSql}`,
+    `SELECT COUNT(1) as c FROM journals ${joinSql} ${whereSql}`,
     params
   );
   const total = countRow?.c ?? 0;
@@ -848,15 +857,17 @@ export async function queryJournals(args: QueryJournalsArgs): Promise<{ total: n
     sortBy = "updated_at";
   }
   const sortOrder = args.sortOrder === "asc" ? "ASC" : "DESC";
-  const orderBy = `ORDER BY ${sortBy} ${sortOrder}`;
+  const orderBy = `ORDER BY journals.${sortBy} ${sortOrder}`;
 
   // 字段选择（默认不包含 BLOB 字段 cover_image）
-  const selectFields = args.fields?.length ? args.fields.join(", ") : JOURNAL_SELECT_FIELDS;
+  const selectFields = args.fields?.length
+    ? args.fields.map((f) => `journals.${f}`).join(", ")
+    : JOURNAL_SELECT_FIELDS.split(", ").map((f) => `journals.${f.trim()}`).join(", ");
 
   // 分页查询
   const offset = (args.page - 1) * args.pageSize;
   const rows = await query<RowDataPacket[]>(
-    `SELECT ${selectFields} FROM journals ${whereSql} ${orderBy} LIMIT ? OFFSET ?`,
+    `SELECT ${selectFields} FROM journals ${joinSql} ${whereSql} ${orderBy} LIMIT ? OFFSET ?`,
     [...params, args.pageSize, offset]
   );
 
