@@ -1160,6 +1160,118 @@ export async function hasJournalCoverImage(journalId: string): Promise<boolean> 
   return !!row;
 }
 
+// ============ 图片搜索缓存 ============
+
+export type ImageSearchCacheStatus = "pending" | "downloaded" | "failed" | "expired";
+
+export type ImageSearchCacheRow = {
+  id: number;
+  journal_id: string;
+  journal_name: string | null;
+  search_query: string;
+  results_json: string; // JSON string
+  result_count: number;
+  tried_indices: string | null; // JSON string of number[]
+  status: ImageSearchCacheStatus;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * 保存或更新图片搜索结果缓存
+ * 使用 UPSERT：如果 journal_id 已存在则更新
+ */
+export async function upsertImageSearchCache(
+  journalId: string,
+  journalName: string,
+  searchQuery: string,
+  results: any[],
+  triedIndices: number[] = [],
+  status: ImageSearchCacheStatus = "pending"
+): Promise<void> {
+  const resultsJson = JSON.stringify(results);
+  const triedJson = JSON.stringify(triedIndices);
+  await execute(
+    `INSERT INTO journal_image_search_cache
+       (journal_id, journal_name, search_query, results_json, result_count, tried_indices, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       journal_name = VALUES(journal_name),
+       search_query = VALUES(search_query),
+       results_json = VALUES(results_json),
+       result_count = VALUES(result_count),
+       tried_indices = VALUES(tried_indices),
+       status = VALUES(status),
+       updated_at = CURRENT_TIMESTAMP`,
+    [journalId, journalName, searchQuery, resultsJson, results.length, triedJson, status]
+  );
+}
+
+/**
+ * 更新缓存的已尝试索引和状态
+ */
+export async function updateImageSearchCacheStatus(
+  journalId: string,
+  triedIndices: number[],
+  status: ImageSearchCacheStatus
+): Promise<void> {
+  await execute(
+    `UPDATE journal_image_search_cache
+     SET tried_indices = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE journal_id = ?`,
+    [JSON.stringify(triedIndices), status, journalId]
+  );
+}
+
+/**
+ * 获取单个期刊的搜索缓存
+ */
+export async function getImageSearchCache(
+  journalId: string
+): Promise<ImageSearchCacheRow | null> {
+  const row = await queryOne<RowDataPacket & ImageSearchCacheRow>(
+    `SELECT * FROM journal_image_search_cache WHERE journal_id = ?`,
+    [journalId]
+  );
+  return row ?? null;
+}
+
+/**
+ * 批量获取待重试的缓存（status = 'pending'）
+ */
+export async function getPendingImageSearchCaches(
+  limit: number = 1000
+): Promise<ImageSearchCacheRow[]> {
+  const rows = await query<(RowDataPacket & ImageSearchCacheRow)[]>(
+    `SELECT * FROM journal_image_search_cache WHERE status = 'pending' ORDER BY updated_at ASC LIMIT ?`,
+    [limit]
+  );
+  return rows as ImageSearchCacheRow[];
+}
+
+/**
+ * 统计缓存状态
+ */
+export async function getImageSearchCacheStats(): Promise<{
+  total: number;
+  pending: number;
+  downloaded: number;
+  failed: number;
+}> {
+  const rows = await query<RowDataPacket[]>(
+    `SELECT status, COUNT(*) as cnt FROM journal_image_search_cache GROUP BY status`
+  );
+  const stats = { total: 0, pending: 0, downloaded: 0, failed: 0 };
+  for (const row of rows) {
+    const cnt = Number(row.cnt);
+    stats.total += cnt;
+    if (row.status in stats) {
+      (stats as any)[row.status] = cnt;
+    }
+  }
+  return stats;
+}
+
 // ============ 流水线状态管理 ============
 
 /**

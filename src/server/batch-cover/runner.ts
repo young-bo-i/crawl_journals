@@ -12,11 +12,19 @@ import {
   queryJournals,
   hasJournalCoverImage,
   updateJournalCoverImage,
+  upsertImageSearchCache,
+  updateImageSearchCacheStatus,
+  getImageSearchCache,
+  getPendingImageSearchCaches,
+  getImageSearchCacheStats,
   type QueryJournalsArgs,
   type SortField,
   type SortOrder,
 } from "@/server/db/repo";
-import { performImageSearch } from "@/app/api/image-search/route";
+import {
+  performImageSearch,
+  type ImageSearchResult,
+} from "@/app/api/image-search/route";
 import { broadcastMessage } from "@/server/ws/manager";
 
 // ============================================================
@@ -260,89 +268,100 @@ async function processInBackground(
         return;
       }
 
-      // 2b. 搜索图片
-      console.log(`${logPrefix} searching images for: ${journal.name}`);
-      const searchStart = Date.now();
-      const results = await performImageSearch(
-        journal.name + " journal cover"
-      );
-      console.log(`${logPrefix} search returned ${results.length} results in ${Date.now() - searchStart}ms`);
+      // 2b. 先查缓存：是否有之前搜索过但下载失败的结果
+      let results: ImageSearchResult[] | null = null;
+      let triedIndices = new Set<number>();
+      let fromCache = false;
 
-      if (results.length === 0) {
-        console.warn(`${logPrefix} FAILED: 搜索无结果 (${journal.name})`);
-        task.progress.failCount++;
-      } else if (!task.stopRequested) {
-        // 2c. 从前 3 张中选尺寸最大的一张
-        const candidates = results.slice(0, 3);
-        const best = candidates.reduce((a, b) =>
-          (a.width || 0) * (a.height || 0) >= (b.width || 0) * (b.height || 0)
-            ? a
-            : b
-        );
+      const cached = await getImageSearchCache(journal.id);
+      if (cached && cached.status === "pending" && cached.result_count > 0) {
+        // 有缓存，直接用，不消耗 API 次数
+        try {
+          results = typeof cached.results_json === "string"
+            ? JSON.parse(cached.results_json)
+            : cached.results_json;
+          const cachedTried: number[] = cached.tried_indices
+            ? (typeof cached.tried_indices === "string"
+                ? JSON.parse(cached.tried_indices)
+                : cached.tried_indices)
+            : [];
+          triedIndices = new Set(cachedTried);
+          fromCache = true;
+          console.log(`${logPrefix} 使用缓存搜索结果 (${results!.length} candidates, ${triedIndices.size} tried) | name=${journal.name}`);
+        } catch {
+          results = null; // 缓存解析失败，重新搜索
+        }
+      }
 
-        // 2d. 下载图片
-        console.log(`${logPrefix} downloading image: ${best.url.substring(0, 80)}...`);
-        const imgRes = await fetch(best.url, {
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0 (compatible; JournalCoverBot/1.0)",
-            Accept: "image/*",
-          },
-          signal: AbortSignal.timeout(15000),
-        });
+      // 2c. 没有缓存或缓存无效，调用搜索 API
+      if (!results) {
+        console.log(`${logPrefix} searching images for: ${journal.name}`);
+        const searchStart = Date.now();
+        const searchQuery = journal.name + " journal cover";
+        results = await performImageSearch(searchQuery);
+        console.log(`${logPrefix} search returned ${results.length} results in ${Date.now() - searchStart}ms`);
 
-        if (!imgRes.ok) {
-          throw new Error(`下载图片失败 (${imgRes.status})`);
+        if (results.length === 0) {
+          console.warn(`${logPrefix} FAILED: 搜索无结果 (${journal.name})`);
+          task.progress.failCount++;
+          task.progress.current++;
+          task.progress.currentName = journal.name;
+          broadcastProgress();
+          return;
         }
 
-        // 检测 MIME
-        let mimeType =
-          imgRes.headers.get("content-type")?.split(";")[0]?.trim() ??
-          "image/jpeg";
-        const ALLOWED = [
-          "image/jpeg",
-          "image/png",
-          "image/gif",
-          "image/webp",
-        ];
-        if (!ALLOWED.includes(mimeType)) {
-          const ext = best.url
-            .split("?")[0]
-            .split(".")
-            .pop()
-            ?.toLowerCase();
-          const extMap: Record<string, string> = {
-            jpg: "image/jpeg",
-            jpeg: "image/jpeg",
-            png: "image/png",
-            gif: "image/gif",
-            webp: "image/webp",
-          };
-          mimeType = (ext && extMap[ext]) || "image/jpeg";
-        }
-
-        const buffer = Buffer.from(await imgRes.arrayBuffer());
-
-        // 限制 5MB
-        if (buffer.length > 5 * 1024 * 1024) {
-          throw new Error("图片过大");
-        }
-
-        // 从 URL 提取文件名
-        const urlPath = new URL(best.url).pathname;
-        const fileName = urlPath.split("/").pop() || "cover.jpg";
-
-        // 2e. 直接写入数据库
-        console.log(`${logPrefix} saving cover (${(buffer.length / 1024).toFixed(0)}KB, ${mimeType})`);
-        await updateJournalCoverImage(
+        // 搜索成功，立即保存到数据库缓存（不管下载是否成功）
+        await upsertImageSearchCache(
           journal.id,
-          buffer,
-          mimeType,
-          fileName
+          journal.name,
+          searchQuery,
+          results,
+          [],
+          "pending"
+        );
+        console.log(`${logPrefix} 搜索结果已缓存到数据库 (${results.length} candidates)`);
+      }
+
+      if (task.stopRequested) return;
+
+      // 2d. 候选图片按面积降序排序，第一轮尝试前 6 张未试过的
+      const sorted = results
+        .map((r, i) => ({ ...r, _origIdx: i }))
+        .filter((r) => !triedIndices.has(r._origIdx))
+        .sort(
+          (a, b) =>
+            (b.width || 0) * (b.height || 0) -
+            (a.width || 0) * (a.height || 0)
         );
 
-        console.log(`${logPrefix} SUCCESS`);
-        task.progress.successCount++;
+      const firstRoundCandidates = sorted.slice(0, 6);
+
+      if (firstRoundCandidates.length === 0) {
+        console.warn(`${logPrefix} 所有候选图片均已尝试过 | name=${journal.name}`);
+        await updateImageSearchCacheStatus(journal.id, [...triedIndices], "failed");
+        task.progress.failCount++;
+        task.progress.current++;
+        task.progress.currentName = journal.name;
+        broadcastProgress();
+        return;
+      }
+
+      const ok = await tryDownloadCandidates(
+        journal,
+        firstRoundCandidates,
+        triedIndices,
+        logPrefix,
+        task
+      );
+
+      if (ok) {
+        // 下载成功，更新缓存状态为 downloaded
+        await updateImageSearchCacheStatus(journal.id, [...triedIndices], "downloaded");
+      } else if (!task.stopRequested) {
+        // 第一轮失败，更新缓存中已尝试的索引，保持 pending 状态
+        await updateImageSearchCacheStatus(journal.id, [...triedIndices], "pending");
+        console.log(`${logPrefix} 第一轮下载失败，已更新缓存 (tried: ${triedIndices.size}/${results.length}) | name=${journal.name}`);
+        // 暂时不计入 failCount，等重试阶段再处理
       }
     } catch (err: any) {
       console.error(`${logPrefix} FAILED: ${err?.message} | name=${journal.name} | stack=${err?.stack?.split("\n")[1]?.trim() ?? ""}`);
@@ -354,34 +373,112 @@ async function processInBackground(
     broadcastProgress();
   };
 
-  // 并发池
+  // 并发池执行第一轮
   console.log(`[batch-cover] ===== Starting processing, concurrency=${CONCURRENCY} =====`);
-  const queue = [...allJournals];
-  const running: Promise<void>[] = [];
+  await runConcurrentPool(allJournals.map((j) => () => processSingle(j)), CONCURRENCY, task);
 
-  while (queue.length > 0 || running.length > 0) {
-    if (task.stopRequested) break;
+  // ---- 3. 重试阶段：从数据库读取 pending 的缓存，用剩余候选重试 ----
+  if (!task.stopRequested) {
+    const pendingCaches = await getPendingImageSearchCaches(10000);
+    // 只重试本次任务涉及的期刊
+    const journalIdSet = new Set(allJournals.map((j) => j.id));
+    const retryItems = pendingCaches.filter((c) => journalIdSet.has(c.journal_id));
 
-    // 填满并发池
-    while (running.length < CONCURRENCY && queue.length > 0) {
-      const journal = queue.shift()!;
-      const p = processSingle(journal).then(() => {
-        running.splice(running.indexOf(p), 1);
-      });
-      running.push(p);
-    }
+    if (retryItems.length > 0) {
+      console.log(`[batch-cover] ===== Retry phase: ${retryItems.length} items from DB cache =====`);
+      task.progress.currentName = `重试下载阶段 (${retryItems.length} 个待重试)...`;
+      broadcastProgress(true);
 
-    // 等待任一任务完成
-    if (running.length > 0) {
-      await Promise.race(running);
+      let retrySuccess = 0;
+      let retryFail = 0;
+
+      const retryOne = async (cacheRow: typeof retryItems[0]) => {
+        if (task.stopRequested) return;
+
+        const logPrefix = `[batch-cover][retry] ${cacheRow.journal_id}`;
+
+        try {
+          // 再次检查是否已有封面
+          const hasCover = await hasJournalCoverImage(cacheRow.journal_id);
+          if (hasCover) {
+            console.log(`${logPrefix} already has cover now, skip`);
+            await updateImageSearchCacheStatus(cacheRow.journal_id, [], "downloaded");
+            task.progress.skipCount++;
+            return;
+          }
+
+          const results: ImageSearchResult[] = typeof cacheRow.results_json === "string"
+            ? JSON.parse(cacheRow.results_json)
+            : cacheRow.results_json;
+          const cachedTried: number[] = cacheRow.tried_indices
+            ? (typeof cacheRow.tried_indices === "string"
+                ? JSON.parse(cacheRow.tried_indices)
+                : cacheRow.tried_indices)
+            : [];
+          const triedIndices = new Set(cachedTried);
+
+          // 尝试所有未试过的候选
+          const remaining = results
+            .map((r, i) => ({ ...r, _origIdx: i }))
+            .filter((_, i) => !triedIndices.has(i))
+            .sort(
+              (a, b) =>
+                (b.width || 0) * (b.height || 0) -
+                (a.width || 0) * (a.height || 0)
+            );
+
+          if (remaining.length === 0) {
+            console.warn(`${logPrefix} no remaining candidates | name=${cacheRow.journal_name}`);
+            await updateImageSearchCacheStatus(cacheRow.journal_id, [...triedIndices], "failed");
+            task.progress.failCount++;
+            retryFail++;
+            return;
+          }
+
+          const journalObj = {
+            id: cacheRow.journal_id,
+            name: cacheRow.journal_name || "Unknown",
+          };
+
+          console.log(`${logPrefix} retrying ${remaining.length} untried candidates | name=${journalObj.name}`);
+          const ok = await tryDownloadCandidates(
+            journalObj,
+            remaining,
+            triedIndices,
+            logPrefix,
+            task
+          );
+
+          if (ok) {
+            await updateImageSearchCacheStatus(cacheRow.journal_id, [...triedIndices], "downloaded");
+            retrySuccess++;
+          } else {
+            await updateImageSearchCacheStatus(cacheRow.journal_id, [...triedIndices], "failed");
+            console.error(`${logPrefix} FAILED after retry: 所有候选图片均下载失败 | name=${journalObj.name}`);
+            task.progress.failCount++;
+            retryFail++;
+          }
+        } catch (err: any) {
+          console.error(`${logPrefix} retry error: ${err?.message} | name=${cacheRow.journal_name}`);
+          task.progress.failCount++;
+          retryFail++;
+        }
+
+        task.progress.currentName = `重试: ${cacheRow.journal_name || cacheRow.journal_id}`;
+        broadcastProgress();
+      };
+
+      await runConcurrentPool(retryItems.map((item) => () => retryOne(item)), CONCURRENCY, task);
+
+      console.log(`[batch-cover] Retry phase done: success=${retrySuccess}, fail=${retryFail}`);
     }
   }
 
-  // 等待剩余任务完成
-  if (running.length > 0) {
-    console.log(`[batch-cover] Waiting for ${running.length} remaining tasks...`);
-    await Promise.all(running);
-  }
+  // 打印缓存统计
+  try {
+    const stats = await getImageSearchCacheStats();
+    console.log(`[batch-cover] Cache stats: total=${stats.total}, pending=${stats.pending}, downloaded=${stats.downloaded}, failed=${stats.failed}`);
+  } catch { /* ignore */ }
 
   task.progress.status = task.stopRequested ? "stopped" : "completed";
   broadcastProgress(true);
@@ -389,6 +486,136 @@ async function processInBackground(
     `[batch-cover] Task ${task.progress.status}: ` +
       `success=${task.progress.successCount}, fail=${task.progress.failCount}, skip=${task.progress.skipCount}`
   );
+}
+
+// ============================================================
+// 通用：尝试从候选列表中下载图片并保存
+// ============================================================
+
+async function tryDownloadCandidates(
+  journal: { id: string; name: string },
+  candidates: Array<ImageSearchResult & { _origIdx: number }>,
+  triedIndices: Set<number>,
+  logPrefix: string,
+  task: { stopRequested: boolean; progress: BatchCoverProgress }
+): Promise<boolean> {
+  for (let ci = 0; ci < candidates.length; ci++) {
+    if (task.stopRequested) break;
+
+    const candidate = candidates[ci];
+    triedIndices.add(candidate._origIdx);
+
+    try {
+      console.log(`${logPrefix} downloading candidate[${candidate._origIdx}]: ${candidate.url.substring(0, 100)}...`);
+      const imgRes = await fetch(candidate.url, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept:
+            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+          Referer: "https://www.google.com/",
+        },
+        redirect: "follow",
+        signal: AbortSignal.timeout(20000),
+      });
+
+      if (!imgRes.ok) {
+        console.warn(`${logPrefix} candidate[${candidate._origIdx}] HTTP ${imgRes.status}, trying next...`);
+        continue;
+      }
+
+      // 检测 MIME
+      let mimeType =
+        imgRes.headers.get("content-type")?.split(";")[0]?.trim() ??
+        "image/jpeg";
+      const ALLOWED = [
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "image/webp",
+      ];
+      if (!ALLOWED.includes(mimeType)) {
+        const ext = candidate.url
+          .split("?")[0]
+          .split(".")
+          .pop()
+          ?.toLowerCase();
+        const extMap: Record<string, string> = {
+          jpg: "image/jpeg",
+          jpeg: "image/jpeg",
+          png: "image/png",
+          gif: "image/gif",
+          webp: "image/webp",
+        };
+        mimeType = (ext && extMap[ext]) || "image/jpeg";
+      }
+
+      const buffer = Buffer.from(await imgRes.arrayBuffer());
+
+      // 跳过过大的图片（>5MB）
+      if (buffer.length > 5 * 1024 * 1024) {
+        console.warn(`${logPrefix} candidate[${candidate._origIdx}] too large (${(buffer.length / 1024 / 1024).toFixed(1)}MB), trying next...`);
+        continue;
+      }
+
+      // 跳过过小的图片（<1KB，可能是占位图）
+      if (buffer.length < 1024) {
+        console.warn(`${logPrefix} candidate[${candidate._origIdx}] too small (${buffer.length}B), trying next...`);
+        continue;
+      }
+
+      // 从 URL 提取文件名
+      const urlPath = new URL(candidate.url).pathname;
+      const fileName = urlPath.split("/").pop() || "cover.jpg";
+
+      // 写入数据库
+      console.log(`${logPrefix} saving cover (${(buffer.length / 1024).toFixed(0)}KB, ${mimeType})`);
+      await updateJournalCoverImage(journal.id, buffer, mimeType, fileName);
+
+      console.log(`${logPrefix} SUCCESS (candidate[${candidate._origIdx}])`);
+      task.progress.successCount++;
+      return true;
+    } catch (dlErr: any) {
+      console.warn(`${logPrefix} candidate[${candidate._origIdx}] failed: ${dlErr?.message}, trying next...`);
+      continue;
+    }
+  }
+  return false;
+}
+
+// ============================================================
+// 通用并发池执行器
+// ============================================================
+
+async function runConcurrentPool(
+  tasks: Array<() => Promise<void>>,
+  concurrency: number,
+  taskState: { stopRequested: boolean }
+) {
+  const queue = [...tasks];
+  const running: Promise<void>[] = [];
+
+  while (queue.length > 0 || running.length > 0) {
+    if (taskState.stopRequested) break;
+
+    while (running.length < concurrency && queue.length > 0) {
+      const fn = queue.shift()!;
+      const p = fn().then(() => {
+        running.splice(running.indexOf(p), 1);
+      });
+      running.push(p);
+    }
+
+    if (running.length > 0) {
+      await Promise.race(running);
+    }
+  }
+
+  if (running.length > 0) {
+    console.log(`[batch-cover] Waiting for ${running.length} remaining tasks...`);
+    await Promise.all(running);
+  }
 }
 
 // ============================================================
