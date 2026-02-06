@@ -169,6 +169,7 @@ export async function runMigrations(): Promise<void> {
             1060, // Duplicate column name
             1061, // Duplicate key name (索引已存在)
             1068, // Multiple primary key defined
+            1072, // Key column doesn't exist (旧迁移引用已删除的列)
             1091, // Can't DROP column/key that doesn't exist
           ];
           

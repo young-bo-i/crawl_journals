@@ -41,7 +41,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import { useColumnResize, type ColumnWidthDef } from "@/lib/useColumnResize";
 import {
   Dialog,
   DialogContent,
@@ -397,6 +397,50 @@ export default function JournalsTable() {
       .filter((def): def is ColumnDef => def !== undefined);
   }, [visibleColumns]);
 
+  // ===== Sticky 表格布局相关 =====
+  const FIRST_COL_W = 60;
+  const LAST_COL_W = 80;
+
+  // 列宽定义数组
+  const columnWidthDefs = useMemo<ColumnWidthDef[]>(
+    () =>
+      visibleColumnDefs.map((col) => ({
+        key: col.key,
+        defaultWidth: col.width || 150,
+      })),
+    [visibleColumnDefs],
+  );
+
+  const { totalBaseWidth, getComputedWidths, onResizeStart } = useColumnResize(
+    columnWidthDefs,
+    { storageKey: "journal-col-widths", minWidth: 60 },
+  );
+
+  // 监听容器宽度
+  const tableContainerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
+
+  useEffect(() => {
+    const el = tableContainerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // 中间列可用宽度 & 计算后的列宽
+  const middleAvailable = Math.max(0, containerWidth - FIRST_COL_W - LAST_COL_W);
+  const computedWidths = useMemo(
+    () => getComputedWidths(middleAvailable),
+    [getComputedWidths, middleAvailable],
+  );
+  const middleTotalWidth = Object.values(computedWidths).reduce((a, b) => a + b, 0);
+  const tableMinWidth = FIRST_COL_W + middleTotalWidth + LAST_COL_W;
+
   // 渲染排序图标
   const renderSortIcon = (field: string) => {
     if (appliedFilters.sortBy !== field) {
@@ -562,36 +606,69 @@ export default function JournalsTable() {
 
           {/* 表格视图 */}
           {viewMode === "table" && (
-            <ScrollArea className="w-full">
-              <div className="min-w-max">
-                <Table>
+            <div ref={tableContainerRef} className="w-full overflow-hidden">
+              <div className="overflow-x-auto">
+                <Table
+                  style={{
+                    tableLayout: "fixed",
+                    minWidth: tableMinWidth,
+                    width: containerWidth > tableMinWidth ? containerWidth : tableMinWidth,
+                  }}
+                >
+                  <colgroup>
+                    <col style={{ width: FIRST_COL_W }} />
+                    {visibleColumnDefs.map((col) => (
+                      <col
+                        key={col.key}
+                        style={{ width: computedWidths[col.key] || col.width || 150 }}
+                      />
+                    ))}
+                    <col style={{ width: LAST_COL_W }} />
+                  </colgroup>
                   <TableHeader>
                     <TableRow>
-                      <TableHead style={{ width: 60 }} className="text-center">
+                      {/* 封面 - sticky left */}
+                      <TableHead
+                        className="sticky left-0 z-20 bg-background text-center sticky-left-shadow"
+                        style={{ width: FIRST_COL_W }}
+                      >
                         封面
                       </TableHead>
+                      {/* 中间列 */}
                       {visibleColumnDefs.map((col) => (
                         <TableHead
                           key={col.key}
-                          style={{ minWidth: col.width || 100 }}
-                          className="whitespace-nowrap"
+                          className="whitespace-nowrap relative group"
                         >
-                          {col.sortable ? (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-auto p-0 font-medium hover:bg-transparent gap-1"
-                              onClick={() => handleSort(col.key)}
-                            >
-                              {col.label}
-                              {renderSortIcon(col.key)}
-                            </Button>
-                          ) : (
-                            col.label
-                          )}
+                          <div className="flex items-center gap-1 pr-2">
+                            {col.sortable ? (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-auto p-0 font-medium hover:bg-transparent gap-1"
+                                onClick={() => handleSort(col.key)}
+                              >
+                                {col.label}
+                                {renderSortIcon(col.key)}
+                              </Button>
+                            ) : (
+                              col.label
+                            )}
+                          </div>
+                          {/* 拖拽把手 */}
+                          <div
+                            className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/50 opacity-0 group-hover:opacity-100 transition-opacity"
+                            onMouseDown={(e) => onResizeStart(col.key, e)}
+                          />
                         </TableHead>
                       ))}
-                      <TableHead className="w-32">操作</TableHead>
+                      {/* 操作 - sticky right */}
+                      <TableHead
+                        className="sticky right-0 z-20 bg-background sticky-right-shadow"
+                        style={{ width: LAST_COL_W }}
+                      >
+                        操作
+                      </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -603,8 +680,8 @@ export default function JournalsTable() {
                       return (
                         <React.Fragment key={rowId}>
                           <TableRow>
-                            {/* 封面列 */}
-                            <TableCell className="text-center p-1">
+                            {/* 封面列 - sticky left */}
+                            <TableCell className="sticky left-0 z-10 bg-background text-center p-1 sticky-left-shadow">
                               {hasCover ? (
                                 <button
                                   className="relative group mx-auto block w-10 h-10 rounded overflow-hidden border hover:ring-2 hover:ring-primary transition-all"
@@ -641,8 +718,9 @@ export default function JournalsTable() {
                                 </button>
                               )}
                             </TableCell>
+                            {/* 中间列 */}
                             {visibleColumnDefs.map((col) => (
-                              <TableCell key={col.key} className="whitespace-nowrap">
+                              <TableCell key={col.key} className="whitespace-nowrap overflow-hidden text-ellipsis">
                                 {col.key === "id" ? (
                                   <button
                                     onClick={() => {
@@ -654,11 +732,11 @@ export default function JournalsTable() {
                                     {rowId}
                                   </button>
                                 ) : col.key === "oa_display_name" ? (
-                                  <span className="line-clamp-1 max-w-[200px]" title={String(row.oa_display_name || "")}>
+                                  <span className="line-clamp-1" title={String(row.oa_display_name || "")}>
                                     {String(row.oa_display_name || "-")}
                                   </span>
                                 ) : col.key === "oa_host_organization" ? (
-                                  <span className="line-clamp-1 max-w-[150px]" title={String(row.oa_host_organization || "")}>
+                                  <span className="line-clamp-1" title={String(row.oa_host_organization || "")}>
                                     {String(row.oa_host_organization || "-")}
                                   </span>
                                 ) : (
@@ -666,29 +744,32 @@ export default function JournalsTable() {
                                 )}
                               </TableCell>
                             ))}
-                            <TableCell>
-                              <div className="flex items-center gap-1">
+                            {/* 操作列 - sticky right */}
+                            <TableCell className="sticky right-0 z-10 bg-background sticky-right-shadow px-2">
+                              <div className="flex items-center justify-center gap-1">
                                 <Button
                                   variant="ghost"
-                                  size="sm"
+                                  size="icon"
+                                  className="h-7 w-7"
                                   onClick={() => {
                                     setSelectedJournalId(rowId);
                                     setDetailSheetOpen(true);
                                   }}
+                                  title="查看详情"
                                 >
-                                  <Eye className="mr-1 h-3 w-3" />
-                                  详情
+                                  <Eye className="h-3.5 w-3.5" />
                                 </Button>
                                 <Button
                                   variant="ghost"
-                                  size="sm"
+                                  size="icon"
+                                  className="h-7 w-7"
                                   onClick={() => {
                                     setSelectedJournalId(rowId);
                                     setEditSheetOpen(true);
                                   }}
+                                  title="修改"
                                 >
-                                  <Pencil className="mr-1 h-3 w-3" />
-                                  修改
+                                  <Pencil className="h-3.5 w-3.5" />
                                 </Button>
                               </div>
                             </TableCell>
@@ -698,19 +779,23 @@ export default function JournalsTable() {
                             <TableRow>
                               <TableCell
                                 colSpan={visibleColumnDefs.length + 2}
-                                className="p-0 sticky left-0"
-                                style={{ maxWidth: "calc(100vw - 4rem)" }}
+                                className="p-0"
                               >
-                                <ImageSearchPanel
-                                  journalId={rowId}
-                                  journalName={String(row.oa_display_name || row.cr_title || row.doaj_title || "")}
-                                  onUploaded={() => {
-                                    setCoverVersion((v) => v + 1);
-                                    setExpandedCoverRowId(null);
-                                    setAppliedFilters({ ...appliedFilters });
-                                  }}
-                                  onClose={() => setExpandedCoverRowId(null)}
-                                />
+                                <div
+                                  className="sticky left-0"
+                                  style={{ width: containerWidth || "100%" }}
+                                >
+                                  <ImageSearchPanel
+                                    journalId={rowId}
+                                    journalName={String(row.oa_display_name || row.cr_title || row.doaj_title || "")}
+                                    onUploaded={() => {
+                                      setCoverVersion((v) => v + 1);
+                                      setExpandedCoverRowId(null);
+                                      setAppliedFilters({ ...appliedFilters });
+                                    }}
+                                    onClose={() => setExpandedCoverRowId(null)}
+                                  />
+                                </div>
                               </TableCell>
                             </TableRow>
                           )}
@@ -740,8 +825,7 @@ export default function JournalsTable() {
                   </TableBody>
                 </Table>
               </div>
-              <ScrollBar orientation="horizontal" />
-            </ScrollArea>
+            </div>
           )}
 
           {/* 封面大图网格视图 */}
