@@ -815,12 +815,12 @@ export async function queryJournals(args: QueryJournalsArgs): Promise<{ total: n
     params.push(args.maxFirstYear);
   }
 
-  // 封面图片筛选
+  // 封面图片筛选（使用 cover_image_name 而非 BLOB 列 cover_image，可走索引）
   if (args.hasCover !== undefined) {
     if (args.hasCover) {
-      where.push("cover_image IS NOT NULL");
+      where.push("cover_image_name IS NOT NULL");
     } else {
-      where.push("cover_image IS NULL");
+      where.push("cover_image_name IS NULL");
     }
   }
 
@@ -1143,7 +1143,7 @@ export async function getJournalCoverImage(
 
 export async function hasJournalCoverImage(journalId: string): Promise<boolean> {
   const row = await queryOne<RowDataPacket>(
-    `SELECT 1 FROM journals WHERE id = ? AND cover_image IS NOT NULL`,
+    `SELECT 1 FROM journals WHERE id = ? AND cover_image_name IS NOT NULL`,
     [journalId]
   );
   return !!row;
