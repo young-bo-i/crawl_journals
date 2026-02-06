@@ -28,6 +28,7 @@ export interface JournalFiltersState {
   isOjs: string;
   doajBoai: string;
   inScimago: string; // SCImago 优先期刊
+  hasCover: string;  // 有无封面
   // 字符串筛选
   country: string;
   oaType: string;
@@ -56,6 +57,7 @@ export const DEFAULT_FILTERS: JournalFiltersState = {
   isOjs: "all",
   doajBoai: "all",
   inScimago: "all",
+  hasCover: "all",
   country: "",
   oaType: "all",
   minWorksCount: "",
@@ -207,6 +209,19 @@ export function JournalFilters({ filters, onChange, onSearch, loading }: Journal
                     <SelectItem value="all">全部</SelectItem>
                     <SelectItem value="yes">SCImago 收录</SelectItem>
                     <SelectItem value="no">非 SCImago</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* 有无封面筛选 */}
+              <div>
+                <label className="text-sm text-muted-foreground mb-1.5 block">封面图片</label>
+                <Select value={filters.hasCover || "all"} onValueChange={(v) => updateFilter("hasCover", v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部</SelectItem>
+                    <SelectItem value="yes">有封面</SelectItem>
+                    <SelectItem value="no">无封面</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

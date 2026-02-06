@@ -7,22 +7,26 @@ export const runtime = "nodejs";
 // 动态生成可排序字段的枚举
 const sortableKeys = SORTABLE_COLUMNS.map(c => c.key) as [string, ...string[]];
 
+// 正确处理查询参数中的布尔值：字符串 "true" -> true, "false" -> false
+const boolParam = z.string().transform((v) => v === "true").optional();
+
 const schema = z.object({
   q: z.string().optional(),
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().positive().max(200).default(20),
   // 布尔筛选
-  inDoaj: z.coerce.boolean().optional(),
-  inNlm: z.coerce.boolean().optional(),
-  hasWikidata: z.coerce.boolean().optional(),
-  hasWikipedia: z.coerce.boolean().optional(),
-  isOpenAccess: z.coerce.boolean().optional(),
-  isCore: z.coerce.boolean().optional(),
-  isOa: z.coerce.boolean().optional(),
-  inScielo: z.coerce.boolean().optional(),
-  isOjs: z.coerce.boolean().optional(),
-  doajBoai: z.coerce.boolean().optional(),
-  inScimago: z.coerce.boolean().optional(),
+  inDoaj: boolParam,
+  inNlm: boolParam,
+  hasWikidata: boolParam,
+  hasWikipedia: boolParam,
+  isOpenAccess: boolParam,
+  isCore: boolParam,
+  isOa: boolParam,
+  inScielo: boolParam,
+  isOjs: boolParam,
+  doajBoai: boolParam,
+  inScimago: boolParam,
+  hasCover: boolParam,
   // 字符串筛选
   country: z.string().optional(),
   oaType: z.string().optional(),
@@ -63,6 +67,7 @@ export async function GET(req: Request) {
     isOjs: params.isOjs,
     doajBoai: params.doajBoai,
     inScimago: params.inScimago,
+    hasCover: params.hasCover,
     // 字符串筛选
     country: params.country,
     oaType: params.oaType,

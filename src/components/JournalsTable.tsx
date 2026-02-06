@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
   ChevronLeft,
   ChevronRight,
@@ -18,6 +18,10 @@ import {
   Pencil,
   ImageIcon,
   ChevronDown,
+  PlayCircle,
+  StopCircle,
+  LayoutGrid,
+  LayoutList,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -38,6 +42,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ColumnSelector } from "./ColumnSelector";
 import { JournalFilters, DEFAULT_FILTERS, type JournalFiltersState } from "./JournalFilters";
 import {
@@ -150,7 +160,21 @@ export default function JournalsTable() {
   // 封面缓存版本号，用于强制刷新封面图片
   const [coverVersion, setCoverVersion] = useState(0);
 
-  // 从 localStorage 恢复列设置
+  // 批量抓取封面
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{
+    current: number;
+    total: number;
+    currentName: string;
+    successCount: number;
+    failCount: number;
+  } | null>(null);
+  const batchStopRef = useRef(false);
+
+  // 视图模式
+  const [viewMode, setViewMode] = useState<"table" | "grid">("table");
+
+  // 从 localStorage 恢复列设置和视图模式
   useEffect(() => {
     const saved = localStorage.getItem("journal-visible-columns");
     if (saved) {
@@ -163,12 +187,21 @@ export default function JournalsTable() {
         // ignore
       }
     }
+    const savedViewMode = localStorage.getItem("journal-view-mode");
+    if (savedViewMode === "table" || savedViewMode === "grid") {
+      setViewMode(savedViewMode);
+    }
   }, []);
 
   // 保存列设置到 localStorage
   useEffect(() => {
     localStorage.setItem("journal-visible-columns", JSON.stringify(visibleColumns));
   }, [visibleColumns]);
+
+  // 保存视图模式到 localStorage
+  useEffect(() => {
+    localStorage.setItem("journal-view-mode", viewMode);
+  }, [viewMode]);
 
   // 构建查询参数
   const buildQueryParams = useCallback(() => {
@@ -193,6 +226,7 @@ export default function JournalsTable() {
       isOjs: "isOjs",
       doajBoai: "doajBoai",
       inScimago: "inScimago",
+      hasCover: "hasCover",
     };
     
     for (const [key, param] of Object.entries(boolMap)) {
@@ -269,6 +303,86 @@ export default function JournalsTable() {
     setPage(1);
   };
 
+  // 批量抓取封面
+  const handleBatchCover = useCallback(async () => {
+    const noCoverRows = rows.filter((r) => !r.cover_image_name);
+    if (noCoverRows.length === 0) return;
+
+    batchStopRef.current = false;
+    setBatchRunning(true);
+    setBatchProgress({
+      current: 0,
+      total: noCoverRows.length,
+      currentName: "",
+      successCount: 0,
+      failCount: 0,
+    });
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (let i = 0; i < noCoverRows.length; i++) {
+      if (batchStopRef.current) break;
+
+      const row = noCoverRows[i];
+      const rowId = row.id as string;
+      const name = String(row.oa_display_name || row.cr_title || row.doaj_title || "");
+
+      setBatchProgress((prev) => ({
+        ...prev!,
+        current: i + 1,
+        currentName: name,
+      }));
+
+      try {
+        // 1. 搜索图片
+        const searchRes = await fetch(
+          `/api/image-search?q=${encodeURIComponent(name + " journal cover")}`
+        );
+        if (!searchRes.ok) throw new Error("搜索失败");
+        const searchData = await searchRes.json();
+        const results: { url: string; width: number; height: number }[] =
+          searchData.results ?? [];
+
+        if (results.length === 0) {
+          failCount++;
+          setBatchProgress((prev) => ({ ...prev!, failCount }));
+          continue;
+        }
+
+        if (batchStopRef.current) break;
+
+        // 2. 从前 3 张中选尺寸最大的一张上传
+        const candidates = results.slice(0, 3);
+        const best = candidates.reduce((a, b) =>
+          (a.width || 0) * (a.height || 0) >= (b.width || 0) * (b.height || 0)
+            ? a
+            : b
+        );
+
+        const uploadRes = await fetch(`/api/journals/${rowId}/cover`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ imageUrl: best.url }),
+        });
+
+        if (!uploadRes.ok) throw new Error("上传失败");
+
+        successCount++;
+        setBatchProgress((prev) => ({ ...prev!, successCount }));
+      } catch (err) {
+        console.error(`Batch cover error for ${rowId}:`, err);
+        failCount++;
+        setBatchProgress((prev) => ({ ...prev!, failCount }));
+      }
+    }
+
+    // 完成后刷新列表
+    setCoverVersion((v) => v + 1);
+    setAppliedFilters((prev) => ({ ...prev }));
+    setBatchRunning(false);
+  }, [rows]);
+
   // 导出 URL
   const exportUrl = useMemo(() => {
     return `/api/journals/export.xlsx?${buildQueryParams()}`;
@@ -331,198 +445,452 @@ export default function JournalsTable() {
       <Card>
         <CardContent className="p-0">
           {/* Stats */}
-          <div className="flex items-center justify-between border-b px-4 py-3">
-            <p className="text-sm text-muted-foreground">
-              {loading ? "加载中..." : `共 ${total.toLocaleString()} 条结果`}
-            </p>
-            <p className="text-sm text-muted-foreground">
-              显示 {visibleColumnDefs.length} 列
-            </p>
+          <div className="flex items-center justify-between border-b px-4 py-3 gap-2 flex-wrap">
+            <div className="flex items-center gap-3">
+              <p className="text-sm text-muted-foreground">
+                {loading ? "加载中..." : `共 ${total.toLocaleString()} 条结果`}
+              </p>
+              {/* 批量抓取封面按钮 */}
+              {!batchRunning ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleBatchCover}
+                  disabled={loading || rows.filter((r) => !r.cover_image_name).length === 0}
+                  className="gap-1"
+                >
+                  <PlayCircle className="h-3.5 w-3.5" />
+                  批量抓取封面
+                  {rows.filter((r) => !r.cover_image_name).length > 0 && (
+                    <Badge variant="secondary" className="ml-1">
+                      {rows.filter((r) => !r.cover_image_name).length}
+                    </Badge>
+                  )}
+                </Button>
+              ) : (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => {
+                    batchStopRef.current = true;
+                  }}
+                  className="gap-1"
+                >
+                  <StopCircle className="h-3.5 w-3.5" />
+                  停止
+                </Button>
+              )}
+            </div>
+
+            {/* 批量进度 */}
+            {batchProgress && batchRunning && (
+              <div className="flex items-center gap-3 flex-1 min-w-[200px]">
+                <div className="flex-1">
+                  <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
+                    <span className="truncate max-w-[200px]">
+                      {batchProgress.currentName || "准备中..."}
+                    </span>
+                    <span>
+                      {batchProgress.current}/{batchProgress.total}
+                    </span>
+                  </div>
+                  <div className="h-2 bg-muted rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-primary rounded-full transition-all duration-300"
+                      style={{
+                        width: `${(batchProgress.current / batchProgress.total) * 100}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="flex gap-3 text-xs mt-1">
+                    <span className="text-emerald-600">
+                      成功 {batchProgress.successCount}
+                    </span>
+                    <span className="text-red-500">
+                      失败 {batchProgress.failCount}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 批量完成结果（非运行时显示最后结果） */}
+            {batchProgress && !batchRunning && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>
+                  批量完成：成功 {batchProgress.successCount}，失败{" "}
+                  {batchProgress.failCount}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2"
+                  onClick={() => setBatchProgress(null)}
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              {/* 视图切换 */}
+              <div className="flex items-center border rounded-md">
+                <Button
+                  variant={viewMode === "table" ? "secondary" : "ghost"}
+                  size="sm"
+                  className="h-8 px-2 rounded-r-none"
+                  onClick={() => setViewMode("table")}
+                  title="表格视图"
+                >
+                  <LayoutList className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant={viewMode === "grid" ? "secondary" : "ghost"}
+                  size="sm"
+                  className="h-8 px-2 rounded-l-none"
+                  onClick={() => setViewMode("grid")}
+                  title="封面大图视图"
+                >
+                  <LayoutGrid className="h-4 w-4" />
+                </Button>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                显示 {visibleColumnDefs.length} 列
+              </p>
+            </div>
           </div>
 
-          {/* Table with horizontal scroll */}
-          <ScrollArea className="w-full">
-            <div className="min-w-max">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead style={{ width: 60 }} className="text-center">
-                      封面
-                    </TableHead>
-                    {visibleColumnDefs.map((col) => (
-                      <TableHead
-                        key={col.key}
-                        style={{ minWidth: col.width || 100 }}
-                        className="whitespace-nowrap"
-                      >
-                        {col.sortable ? (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-auto p-0 font-medium hover:bg-transparent gap-1"
-                            onClick={() => handleSort(col.key)}
-                          >
-                            {col.label}
-                            {renderSortIcon(col.key)}
-                          </Button>
-                        ) : (
-                          col.label
-                        )}
+          {/* 表格视图 */}
+          {viewMode === "table" && (
+            <ScrollArea className="w-full">
+              <div className="min-w-max">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead style={{ width: 60 }} className="text-center">
+                        封面
                       </TableHead>
-                    ))}
-                    <TableHead className="w-32">操作</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {rows.map((row) => {
-                    const rowId = row.id as string;
-                    const hasCover = !!row.cover_image_name;
-                    const isExpanded = expandedCoverRowId === rowId;
+                      {visibleColumnDefs.map((col) => (
+                        <TableHead
+                          key={col.key}
+                          style={{ minWidth: col.width || 100 }}
+                          className="whitespace-nowrap"
+                        >
+                          {col.sortable ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-auto p-0 font-medium hover:bg-transparent gap-1"
+                              onClick={() => handleSort(col.key)}
+                            >
+                              {col.label}
+                              {renderSortIcon(col.key)}
+                            </Button>
+                          ) : (
+                            col.label
+                          )}
+                        </TableHead>
+                      ))}
+                      <TableHead className="w-32">操作</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {rows.map((row) => {
+                      const rowId = row.id as string;
+                      const hasCover = !!row.cover_image_name;
+                      const isExpanded = expandedCoverRowId === rowId;
 
-                    return (
-                      <React.Fragment key={rowId}>
-                        <TableRow>
-                          {/* 封面列 */}
-                          <TableCell className="text-center p-1">
-                            {hasCover ? (
-                              <button
-                                className="relative group mx-auto block w-10 h-10 rounded overflow-hidden border hover:ring-2 hover:ring-primary transition-all"
-                                onClick={() =>
-                                  setExpandedCoverRowId(isExpanded ? null : rowId)
-                                }
-                                title="点击搜索/更换封面"
-                              >
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img
-                                  src={`/api/journals/${rowId}/cover?v=${coverVersion}`}
-                                  alt="封面"
-                                  className="w-full h-full object-cover"
-                                />
-                                {isExpanded && (
-                                  <div className="absolute inset-0 bg-primary/20 flex items-center justify-center">
-                                    <ChevronDown className="h-4 w-4 text-primary" />
-                                  </div>
-                                )}
-                              </button>
-                            ) : (
-                              <button
-                                className={`mx-auto flex items-center justify-center w-10 h-10 rounded border-2 border-dashed transition-colors ${
-                                  isExpanded
-                                    ? "border-primary bg-primary/5 text-primary"
-                                    : "border-muted-foreground/30 text-muted-foreground/50 hover:border-primary hover:text-primary hover:bg-primary/5"
-                                }`}
-                                onClick={() =>
-                                  setExpandedCoverRowId(isExpanded ? null : rowId)
-                                }
-                                title="点击搜索封面图片"
-                              >
-                                <ImageIcon className="h-4 w-4" />
-                              </button>
-                            )}
-                          </TableCell>
-                          {visibleColumnDefs.map((col) => (
-                            <TableCell key={col.key} className="whitespace-nowrap">
-                              {col.key === "id" ? (
+                      return (
+                        <React.Fragment key={rowId}>
+                          <TableRow>
+                            {/* 封面列 */}
+                            <TableCell className="text-center p-1">
+                              {hasCover ? (
                                 <button
+                                  className="relative group mx-auto block w-10 h-10 rounded overflow-hidden border hover:ring-2 hover:ring-primary transition-all"
+                                  onClick={() =>
+                                    setExpandedCoverRowId(isExpanded ? null : rowId)
+                                  }
+                                  title="点击搜索/更换封面"
+                                >
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img
+                                    src={`/api/journals/${rowId}/cover?v=${coverVersion}`}
+                                    alt="封面"
+                                    className="w-full h-full object-cover"
+                                  />
+                                  {isExpanded && (
+                                    <div className="absolute inset-0 bg-primary/20 flex items-center justify-center">
+                                      <ChevronDown className="h-4 w-4 text-primary" />
+                                    </div>
+                                  )}
+                                </button>
+                              ) : (
+                                <button
+                                  className={`mx-auto flex items-center justify-center w-10 h-10 rounded border-2 border-dashed transition-colors ${
+                                    isExpanded
+                                      ? "border-primary bg-primary/5 text-primary"
+                                      : "border-muted-foreground/30 text-muted-foreground/50 hover:border-primary hover:text-primary hover:bg-primary/5"
+                                  }`}
+                                  onClick={() =>
+                                    setExpandedCoverRowId(isExpanded ? null : rowId)
+                                  }
+                                  title="点击搜索封面图片"
+                                >
+                                  <ImageIcon className="h-4 w-4" />
+                                </button>
+                              )}
+                            </TableCell>
+                            {visibleColumnDefs.map((col) => (
+                              <TableCell key={col.key} className="whitespace-nowrap">
+                                {col.key === "id" ? (
+                                  <button
+                                    onClick={() => {
+                                      setSelectedJournalId(rowId);
+                                      setDetailSheetOpen(true);
+                                    }}
+                                    className="text-primary hover:underline font-mono text-xs"
+                                  >
+                                    {rowId}
+                                  </button>
+                                ) : col.key === "oa_display_name" ? (
+                                  <span className="line-clamp-1 max-w-[200px]" title={String(row.oa_display_name || "")}>
+                                    {String(row.oa_display_name || "-")}
+                                  </span>
+                                ) : col.key === "oa_host_organization" ? (
+                                  <span className="line-clamp-1 max-w-[150px]" title={String(row.oa_host_organization || "")}>
+                                    {String(row.oa_host_organization || "-")}
+                                  </span>
+                                ) : (
+                                  formatValue(row[col.key], col.type)
+                                )}
+                              </TableCell>
+                            ))}
+                            <TableCell>
+                              <div className="flex items-center gap-1">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
                                   onClick={() => {
                                     setSelectedJournalId(rowId);
                                     setDetailSheetOpen(true);
                                   }}
-                                  className="text-primary hover:underline font-mono text-xs"
                                 >
-                                  {rowId}
-                                </button>
-                              ) : col.key === "oa_display_name" ? (
-                                <span className="line-clamp-1 max-w-[200px]" title={String(row.oa_display_name || "")}>
-                                  {String(row.oa_display_name || "-")}
-                                </span>
-                              ) : col.key === "oa_host_organization" ? (
-                                <span className="line-clamp-1 max-w-[150px]" title={String(row.oa_host_organization || "")}>
-                                  {String(row.oa_host_organization || "-")}
-                                </span>
-                              ) : (
-                                formatValue(row[col.key], col.type)
-                              )}
+                                  <Eye className="mr-1 h-3 w-3" />
+                                  详情
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => {
+                                    setSelectedJournalId(rowId);
+                                    setEditSheetOpen(true);
+                                  }}
+                                >
+                                  <Pencil className="mr-1 h-3 w-3" />
+                                  修改
+                                </Button>
+                              </div>
                             </TableCell>
-                          ))}
-                          <TableCell>
-                            <div className="flex items-center gap-1">
+                          </TableRow>
+                          {/* 展开的封面搜索面板 */}
+                          {isExpanded && (
+                            <TableRow>
+                              <TableCell
+                                colSpan={visibleColumnDefs.length + 2}
+                                className="p-0 sticky left-0"
+                                style={{ maxWidth: "calc(100vw - 4rem)" }}
+                              >
+                                <ImageSearchPanel
+                                  journalId={rowId}
+                                  journalName={String(row.oa_display_name || row.cr_title || row.doaj_title || "")}
+                                  onUploaded={() => {
+                                    setCoverVersion((v) => v + 1);
+                                    setExpandedCoverRowId(null);
+                                    setAppliedFilters({ ...appliedFilters });
+                                  }}
+                                  onClose={() => setExpandedCoverRowId(null)}
+                                />
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                    {rows.length === 0 && !loading && (
+                      <TableRow>
+                        <TableCell
+                          colSpan={visibleColumnDefs.length + 2}
+                          className="h-24 text-center text-muted-foreground"
+                        >
+                          暂无数据（请先在控制面板运行抓取任务）
+                        </TableCell>
+                      </TableRow>
+                    )}
+                    {loading && (
+                      <TableRow>
+                        <TableCell
+                          colSpan={visibleColumnDefs.length + 2}
+                          className="h-24 text-center"
+                        >
+                          <Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" />
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+              <ScrollBar orientation="horizontal" />
+            </ScrollArea>
+          )}
+
+          {/* 封面大图网格视图 */}
+          {viewMode === "grid" && (
+            <div className="p-4">
+              {loading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : rows.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  暂无数据（请先在控制面板运行抓取任务）
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                  {rows.map((row) => {
+                    const rowId = row.id as string;
+                    const hasCover = !!row.cover_image_name;
+                    const name = String(row.oa_display_name || row.cr_title || row.doaj_title || "-");
+                    const publisher = String(row.oa_host_organization || "-");
+                    const country = String(row.oa_country_code || "");
+
+                    return (
+                      <div
+                        key={rowId}
+                        className="group border rounded-lg overflow-hidden bg-card hover:shadow-md transition-shadow"
+                      >
+                        {/* 封面区域 */}
+                        <button
+                          className="relative w-full aspect-[3/4] bg-muted flex items-center justify-center overflow-hidden cursor-pointer"
+                          onClick={() =>
+                            setExpandedCoverRowId(
+                              expandedCoverRowId === rowId ? null : rowId
+                            )
+                          }
+                          title={hasCover ? "点击搜索/更换封面" : "点击搜索封面图片"}
+                        >
+                          {hasCover ? (
+                            <>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={`/api/journals/${rowId}/cover?v=${coverVersion}`}
+                                alt="封面"
+                                className="w-full h-full object-cover"
+                              />
+                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
+                            </>
+                          ) : (
+                            <div className="flex flex-col items-center gap-2 text-muted-foreground/40">
+                              <ImageIcon className="h-10 w-10" />
+                              <span className="text-xs">无封面</span>
+                            </div>
+                          )}
+                        </button>
+
+                        {/* 信息区域 */}
+                        <div className="p-3 space-y-1">
+                          <h3
+                            className="text-sm font-medium line-clamp-2 leading-tight cursor-pointer hover:text-primary"
+                            title={name}
+                            onClick={() => {
+                              setSelectedJournalId(rowId);
+                              setDetailSheetOpen(true);
+                            }}
+                          >
+                            {name}
+                          </h3>
+                          <p className="text-xs text-muted-foreground line-clamp-1" title={publisher}>
+                            {publisher}
+                          </p>
+                          <div className="flex items-center justify-between pt-1">
+                            {country && (
+                              <Badge variant="outline" className="text-[10px]">
+                                {country}
+                              </Badge>
+                            )}
+                            <div className="flex items-center gap-1 ml-auto">
                               <Button
                                 variant="ghost"
-                                size="sm"
+                                size="icon"
+                                className="h-7 w-7"
                                 onClick={() => {
                                   setSelectedJournalId(rowId);
                                   setDetailSheetOpen(true);
                                 }}
+                                title="查看详情"
                               >
-                                <Eye className="mr-1 h-3 w-3" />
-                                详情
+                                <Eye className="h-3.5 w-3.5" />
                               </Button>
                               <Button
                                 variant="ghost"
-                                size="sm"
+                                size="icon"
+                                className="h-7 w-7"
                                 onClick={() => {
                                   setSelectedJournalId(rowId);
                                   setEditSheetOpen(true);
                                 }}
+                                title="编辑"
                               >
-                                <Pencil className="mr-1 h-3 w-3" />
-                                修改
+                                <Pencil className="h-3.5 w-3.5" />
                               </Button>
                             </div>
-                          </TableCell>
-                        </TableRow>
-                        {/* 展开的封面搜索面板 */}
-                        {isExpanded && (
-                          <TableRow>
-                            <TableCell
-                              colSpan={visibleColumnDefs.length + 2}
-                              className="p-0 sticky left-0"
-                              style={{ maxWidth: "calc(100vw - 4rem)" }}
-                            >
-                              <ImageSearchPanel
-                                journalId={rowId}
-                                journalName={String(row.oa_display_name || row.cr_title || row.doaj_title || "")}
-                                onUploaded={() => {
-                                  // 刷新封面版本号，强制重新加载图片
-                                  setCoverVersion((v) => v + 1);
-                                  setExpandedCoverRowId(null);
-                                  // 刷新列表数据（更新 cover_image_name 字段）
-                                  setAppliedFilters({ ...appliedFilters });
-                                }}
-                                onClose={() => setExpandedCoverRowId(null)}
-                              />
-                            </TableCell>
-                          </TableRow>
-                        )}
-                      </React.Fragment>
+                          </div>
+                        </div>
+                      </div>
                     );
                   })}
-                  {rows.length === 0 && !loading && (
-                    <TableRow>
-                      <TableCell
-                        colSpan={visibleColumnDefs.length + 2}
-                        className="h-24 text-center text-muted-foreground"
-                      >
-                        暂无数据（请先在控制面板运行抓取任务）
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {loading && (
-                    <TableRow>
-                      <TableCell
-                        colSpan={visibleColumnDefs.length + 2}
-                        className="h-24 text-center"
-                      >
-                        <Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" />
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
+                </div>
+              )}
             </div>
-            <ScrollBar orientation="horizontal" />
-          </ScrollArea>
+          )}
+
+          {/* 网格视图的封面搜索 Dialog */}
+          {viewMode === "grid" && expandedCoverRowId && (
+            <Dialog
+              open={true}
+              onOpenChange={(open) => {
+                if (!open) setExpandedCoverRowId(null);
+              }}
+            >
+              <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>
+                    搜索封面 -{" "}
+                    {String(
+                      rows.find((r) => r.id === expandedCoverRowId)?.oa_display_name ||
+                        rows.find((r) => r.id === expandedCoverRowId)?.cr_title ||
+                        ""
+                    )}
+                  </DialogTitle>
+                </DialogHeader>
+                <ImageSearchPanel
+                  journalId={expandedCoverRowId}
+                  journalName={String(
+                    rows.find((r) => r.id === expandedCoverRowId)?.oa_display_name ||
+                      rows.find((r) => r.id === expandedCoverRowId)?.cr_title ||
+                      rows.find((r) => r.id === expandedCoverRowId)?.doaj_title ||
+                      ""
+                  )}
+                  onUploaded={() => {
+                    setCoverVersion((v) => v + 1);
+                    setExpandedCoverRowId(null);
+                    setAppliedFilters({ ...appliedFilters });
+                  }}
+                  onClose={() => setExpandedCoverRowId(null)}
+                />
+              </DialogContent>
+            </Dialog>
+          )}
 
           {/* Pagination */}
           <div className="flex items-center justify-between border-t px-4 py-3">

@@ -713,6 +713,7 @@ export type QueryJournalsArgs = {
   isOjs?: boolean;
   doajBoai?: boolean;
   inScimago?: boolean; // SCImago 优先期刊筛选
+  hasCover?: boolean;  // 是否有封面图片
   // 字符串筛选
   country?: string;
   oaType?: string;
@@ -809,6 +810,15 @@ export async function queryJournals(args: QueryJournalsArgs): Promise<{ total: n
   if (args.maxFirstYear !== undefined) {
     where.push("oa_first_publication_year <= ?");
     params.push(args.maxFirstYear);
+  }
+
+  // 封面图片筛选
+  if (args.hasCover !== undefined) {
+    if (args.hasCover) {
+      where.push("cover_image IS NOT NULL");
+    } else {
+      where.push("cover_image IS NULL");
+    }
   }
 
   // SCImago 优先期刊筛选（通过 issn_l 与 scimago_issn_index 关联）
