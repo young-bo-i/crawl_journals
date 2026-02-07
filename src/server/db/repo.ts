@@ -139,6 +139,9 @@ export type JournalRow = {
   wikipedia_categories: string[] | null;
   wikipedia_infobox: any | null;
   
+  // SCImago 收录标志
+  in_scimago: boolean;
+  
   // 封面图片
   cover_image: Buffer | null;
   cover_image_type: string | null;
@@ -181,6 +184,7 @@ const JOURNAL_SELECT_FIELDS = `
   wikidata_has_entity, wikidata_homepage,
   wikipedia_has_article, wikipedia_article_title, wikipedia_extract, wikipedia_description,
   wikipedia_thumbnail, wikipedia_categories, wikipedia_infobox,
+  in_scimago,
   cover_image_type, cover_image_name,
   custom_title, custom_publisher, custom_country, custom_homepage, custom_description, custom_notes, custom_updated_at,
   created_at, updated_at
@@ -824,18 +828,11 @@ export async function queryJournals(args: QueryJournalsArgs): Promise<{ total: n
     }
   }
 
-  // SCImago 筛选：使用 EXISTS/NOT EXISTS，避免子查询生成大临时表
+  // SCImago 筛选：使用物化列 in_scimago，避免关联子查询
   const joins: string[] = [];
   if (args.inScimago !== undefined) {
-    if (args.inScimago) {
-      where.push(
-        "EXISTS (SELECT 1 FROM scimago_issn_index _sci WHERE _sci.issn = journals.issn_l LIMIT 1)"
-      );
-    } else {
-      where.push(
-        "NOT EXISTS (SELECT 1 FROM scimago_issn_index _sci WHERE _sci.issn = journals.issn_l LIMIT 1)"
-      );
-    }
+    where.push("journals.in_scimago = ?");
+    params.push(args.inScimago ? 1 : 0);
   }
 
   const joinSql = joins.length ? joins.join(" ") : "";
