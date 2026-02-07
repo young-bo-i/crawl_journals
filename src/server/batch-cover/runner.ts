@@ -249,8 +249,8 @@ async function processInBackground(
     return;
   }
 
-  // ---- 2. 并发处理（并发 2，避免镜像站过载） ----
-  const CONCURRENCY = 2;
+  // ---- 2. 并发处理（并发 5） ----
+  const CONCURRENCY = 5;
   const MAX_PAGES = 5; // 每个期刊最多搜索 5 页
 
   let processedSoFar = 0;
