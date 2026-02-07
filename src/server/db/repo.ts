@@ -967,12 +967,36 @@ export async function queryJournals(args: QueryJournalsArgs): Promise<{ total: n
     return r?.c ?? 0;
   })();
 
-  // SELECT 查询
+  // SELECT 查询 —— 延迟 JOIN（Deferred Join）策略
+  //
+  // 问题：直接 SELECT fields FROM journals FORCE INDEX ... WHERE ... LIMIT 20
+  //       每扫描一行都需要回表读聚簇索引（1.6GB），即使最终只返回 20 行
+  //       如果扫描 200 行才找到 20 条匹配的，就产生 200 次随机 I/O
+  //
+  // 方案：先用子查询在二级索引中找到 20 个 id（不回表），
+  //       再用这 20 个 id 做点查获取字段值（只 20 次回表）
   const offset = (args.page - 1) * args.pageSize;
-  const rowsPromise = query<RowDataPacket[]>(
-    `SELECT ${selectFields} FROM journals ${forceIndex} ${whereSql} ${orderBy} LIMIT ? OFFSET ?`,
-    [...params, args.pageSize, offset]
-  );
+
+  const useDeferred = !!forceIndex; // 有 FORCE INDEX 时用延迟 JOIN（主要是 inScimago 场景）
+
+  const rowsPromise = useDeferred
+    ? query<RowDataPacket[]>(
+        `SELECT ${selectFields}
+         FROM journals
+         INNER JOIN (
+           SELECT journals.id
+           FROM journals ${forceIndex}
+           ${whereSql}
+           ${orderBy}
+           LIMIT ? OFFSET ?
+         ) AS _ids ON journals.id = _ids.id
+         ${orderBy}`,
+        [...params, args.pageSize, offset]
+      )
+    : query<RowDataPacket[]>(
+        `SELECT ${selectFields} FROM journals ${whereSql} ${orderBy} LIMIT ? OFFSET ?`,
+        [...params, args.pageSize, offset]
+      );
 
   const [total, rows] = await Promise.all([countPromise, rowsPromise]);
 
