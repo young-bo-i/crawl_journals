@@ -23,6 +23,12 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 
+/** 通过后端代理加载图片，避免跨域/防盗链问题 */
+function proxyUrl(url: string): string {
+  if (!url) return "";
+  return `/api/image-proxy?url=${encodeURIComponent(url)}`;
+}
+
 type ImageResult = {
   url: string;
   thumbnail: string;
@@ -303,7 +309,7 @@ export function ImageSearchPanel({
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={img.thumbnail}
+                src={proxyUrl(img.thumbnail)}
                 alt={img.title}
                 className="w-full h-full object-cover"
                 loading="lazy"
@@ -355,7 +361,7 @@ export function ImageSearchPanel({
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={previewImage.url}
+                  src={proxyUrl(previewImage.url)}
                   alt={previewImage.title}
                   className="max-w-full max-h-[60vh] object-contain"
                 />
