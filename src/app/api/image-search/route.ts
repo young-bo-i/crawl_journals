@@ -41,6 +41,8 @@ let apiKeyIndex = 0;
 let proxyIndex = 0;
 let scraperKeyIndex = 0;
 let serperKeyIndex = 0;
+// 记录已耗尽额度的 Key 索引（进程内持久，重启后重置）
+const exhaustedSerperKeys = new Set<number>();
 
 // ============================================================
 // 从数据库读取配置
@@ -392,16 +394,25 @@ async function searchViaSerper(
   serperApiKeys: string[],
   page = 0
 ): Promise<ImageSearchResult[]> {
-  const maxRetries = Math.min(3, serperApiKeys.length); // 最多重试 3 次，且不超过 Key 数量
+  // 过滤掉已耗尽额度的 Key
+  const availableKeys = serperApiKeys
+    .map((key, idx) => ({ key, idx }))
+    .filter(({ idx }) => !exhaustedSerperKeys.has(idx));
+
+  if (availableKeys.length === 0) {
+    console.error(`[image-search] 所有 Serper Key (${serperApiKeys.length}) 均已耗尽额度`);
+    throw new Error("SERPER_API_FAILED:ALL_KEYS_EXHAUSTED");
+  }
+
   let lastError: Error | null = null;
 
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const keyIdx = (serperKeyIndex + attempt) % serperApiKeys.length;
-    const key = serperApiKeys[keyIdx];
+  for (let attempt = 0; attempt < availableKeys.length; attempt++) {
+    const { key, idx: keyIdx } = availableKeys[(serperKeyIndex + attempt) % availableKeys.length];
 
     console.log(
       `[image-search] serper_api using key #${keyIdx + 1}` +
-        (attempt > 0 ? ` (retry ${attempt}/${maxRetries - 1})` : "")
+        (attempt > 0 ? ` (retry ${attempt})` : "") +
+        ` (${availableKeys.length} available / ${serperApiKeys.length} total)`
     );
 
     try {
@@ -419,12 +430,23 @@ async function searchViaSerper(
         signal: AbortSignal.timeout(15000),
       });
 
-      // Key 额度耗尽或被限流 → 跳过此 Key，试下一个
-      if (res.status === 429 || res.status === 403) {
+      // Key 额度耗尽、被限流、或余额不足 → 标记并跳过
+      if (res.status === 429 || res.status === 403 || res.status === 400) {
         const errText = await res.text().catch(() => "");
-        console.warn(
-          `[image-search] Serper key #${keyIdx + 1} unavailable (${res.status}): ${errText.substring(0, 100)}`
-        );
+        const isCreditsExhausted = errText.includes("Not enough credits") || errText.includes("credits");
+
+        if (isCreditsExhausted) {
+          // 永久标记此 Key（进程生命周期内不再使用）
+          exhaustedSerperKeys.add(keyIdx);
+          console.warn(
+            `[image-search] Serper key #${keyIdx + 1} 额度耗尽，已永久跳过 (${res.status}): ${errText.substring(0, 100)}`
+          );
+        } else {
+          console.warn(
+            `[image-search] Serper key #${keyIdx + 1} unavailable (${res.status}): ${errText.substring(0, 100)}`
+          );
+        }
+
         lastError = new Error(
           res.status === 429 ? "RATE_LIMITED" : `SERPER_API_FAILED:${res.status}`
         );
@@ -441,8 +463,8 @@ async function searchViaSerper(
         throw new Error(`SERPER_API_FAILED:${res.status}`);
       }
 
-      // 成功 → 更新轮询指针，使下次从下一个 Key 开始
-      serperKeyIndex = keyIdx + 1;
+      // 成功 → 更新轮询指针
+      serperKeyIndex = attempt + 1;
 
       const data = await res.json();
       const images: any[] = data.images ?? [];
@@ -456,8 +478,7 @@ async function searchViaSerper(
         contextUrl: img.link ?? "",
       }));
     } catch (err: any) {
-      // 网络超时等非 HTTP 错误也尝试下一个 Key
-      if (err?.message?.includes("SERPER_API_FAILED")) throw err; // 非限流的 HTTP 错误直接抛出
+      if (err?.message?.includes("SERPER_API_FAILED")) throw err;
       console.warn(
         `[image-search] Serper key #${keyIdx + 1} request failed:`,
         err?.message
@@ -466,8 +487,8 @@ async function searchViaSerper(
     }
   }
 
-  // 所有 Key 都失败了
-  throw lastError ?? new Error("RATE_LIMITED");
+  // 所有可用 Key 都失败了
+  throw lastError ?? new Error("SERPER_API_FAILED:ALL_KEYS_FAILED");
 }
 
 // ============================================================
