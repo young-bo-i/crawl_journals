@@ -1108,26 +1108,33 @@ export async function updateJournalCoverImage(
   mimeType: string,
   fileName: string
 ): Promise<boolean> {
+  // 写入独立的封面表（INSERT 或 UPDATE）
+  await execute(
+    `INSERT INTO journal_covers (journal_id, image, image_type, image_name)
+     VALUES (?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       image = VALUES(image),
+       image_type = VALUES(image_type),
+       image_name = VALUES(image_name)`,
+    [journalId, image, mimeType, fileName]
+  );
+  // 同步更新 journals.cover_image_name（筛选索引需要）
   const result = await execute(
-    `UPDATE journals SET 
-      cover_image = ?, 
-      cover_image_type = ?, 
-      cover_image_name = ?,
-      updated_at = ?
-     WHERE id = ?`,
-    [image, mimeType, fileName, nowLocal(), journalId]
+    `UPDATE journals SET cover_image_name = ?, updated_at = ? WHERE id = ?`,
+    [fileName, nowLocal(), journalId]
   );
   return result.affectedRows > 0;
 }
 
 export async function deleteJournalCoverImage(journalId: string): Promise<boolean> {
+  // 从封面表删除
+  await execute(
+    `DELETE FROM journal_covers WHERE journal_id = ?`,
+    [journalId]
+  );
+  // 同步清除 journals.cover_image_name
   const result = await execute(
-    `UPDATE journals SET 
-      cover_image = NULL, 
-      cover_image_type = NULL, 
-      cover_image_name = NULL,
-      updated_at = ?
-     WHERE id = ?`,
+    `UPDATE journals SET cover_image_name = NULL, updated_at = ? WHERE id = ?`,
     [nowLocal(), journalId]
   );
   return result.affectedRows > 0;
@@ -1136,17 +1143,32 @@ export async function deleteJournalCoverImage(journalId: string): Promise<boolea
 export async function getJournalCoverImage(
   journalId: string
 ): Promise<{ image: Buffer; mimeType: string; fileName: string } | null> {
+  // 优先从独立封面表读取
   const row = await queryOne<RowDataPacket>(
+    `SELECT image, image_type, image_name FROM journal_covers WHERE journal_id = ?`,
+    [journalId]
+  );
+
+  if (row?.image) {
+    return {
+      image: row.image,
+      mimeType: row.image_type || "image/jpeg",
+      fileName: row.image_name || "cover.jpg",
+    };
+  }
+
+  // 兼容回退：迁移期间旧数据可能仍在 journals 表中
+  const fallback = await queryOne<RowDataPacket>(
     `SELECT cover_image, cover_image_type, cover_image_name FROM journals WHERE id = ?`,
     [journalId]
   );
-  
-  if (!row || !row.cover_image) return null;
-  
+
+  if (!fallback || !fallback.cover_image) return null;
+
   return {
-    image: row.cover_image,
-    mimeType: row.cover_image_type || "image/jpeg",
-    fileName: row.cover_image_name || "cover.jpg",
+    image: fallback.cover_image,
+    mimeType: fallback.cover_image_type || "image/jpeg",
+    fileName: fallback.cover_image_name || "cover.jpg",
   };
 }
 
@@ -1156,6 +1178,37 @@ export async function hasJournalCoverImage(journalId: string): Promise<boolean> 
     [journalId]
   );
   return !!row;
+}
+
+// ============ 封面数据迁移 ============
+
+/**
+ * 将 journals 表中的封面数据迁移到 journal_covers 表
+ * 一条 SQL 完成，MySQL 内部执行，零数据传输
+ */
+export async function migrateCoverImages(): Promise<number> {
+  const result = await execute(
+    `INSERT IGNORE INTO journal_covers (journal_id, image, image_type, image_name)
+     SELECT id, cover_image, COALESCE(cover_image_type, 'image/jpeg'), COALESCE(cover_image_name, 'cover.jpg')
+     FROM journals
+     WHERE cover_image IS NOT NULL`
+  );
+  console.log(`[Cover Migration] 迁移了 ${result.affectedRows} 条封面到 journal_covers 表`);
+  return result.affectedRows;
+}
+
+/**
+ * 分批清空 journals 表中的旧 BLOB 数据
+ * 每次处理 batchSize 行，返回本批实际处理数量
+ * 返回 0 表示全部清理完毕
+ */
+export async function cleanupOldCoverBlobs(batchSize: number = 100): Promise<number> {
+  const result = await execute(
+    `UPDATE journals SET cover_image = NULL, cover_image_type = NULL
+     WHERE cover_image IS NOT NULL LIMIT ?`,
+    [batchSize]
+  );
+  return result.affectedRows;
 }
 
 // ============ 图片搜索缓存 ============
