@@ -481,9 +481,10 @@ async function searchViaMirror(
   mirrorUrl: string,
   page = 0
 ): Promise<ImageSearchResult[]> {
-  // 构造镜像站搜索 URL（与 Google Images 参数一致）
+  // 使用用户配置的镜像站 URL 作为搜索入口
+  // 例如 http://younghome.fun:22978/imghp → http://younghome.fun:22978/imghp?q=...&tbm=isch
   const base = mirrorUrl.replace(/\/+$/, "");
-  const searchUrl = new URL(`${base}/search`);
+  const searchUrl = new URL(base);
   searchUrl.searchParams.set("q", query);
   searchUrl.searchParams.set("tbm", "isch");
   searchUrl.searchParams.set("ijn", String(page));
