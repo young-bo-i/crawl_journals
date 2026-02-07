@@ -435,10 +435,10 @@ export async function importScimagoFile(
   onProgress?.({ current: rows.length, total: rows.length, phase: "indexing" });
   await updateIssnIndex(rows);
   
-  // 增量同步 journals.in_scimago 标志
+  // 增量同步 journal_scimago_cache 缓存表
   const allIssns = rows.flatMap((r) => r.issns).filter((issn) => issn && issn.length >= 8);
   const uniqueIssns = [...new Set(allIssns.map((issn) => issn.substring(0, 9)))];
-  await syncInScimagoFlags(uniqueIssns);
+  await syncScimagoCache(uniqueIssns);
   
   return {
     year,
@@ -490,8 +490,9 @@ export async function deleteScimagoData(): Promise<{ deleted: number; indexDelet
   
   console.log(`[SCImago Delete] 已删除 ${mainResult.affectedRows} 条排名数据, ${indexResult.affectedRows} 条索引数据`);
   
-  // 清除 journals 表中的 in_scimago 标志
-  await resetInScimagoFlags();
+  // 清空缓存表
+  await pool.execute(`TRUNCATE TABLE journal_scimago_cache`);
+  console.log(`[SCImago Delete] 已清空 journal_scimago_cache 缓存表`);
   
   return {
     deleted: mainResult.affectedRows,
@@ -500,26 +501,29 @@ export async function deleteScimagoData(): Promise<{ deleted: number; indexDelet
 }
 
 // =============================================
-// in_scimago 物化标志维护
+// journal_scimago_cache 缓存表维护
 // =============================================
 
 /**
- * 全量回填 in_scimago 标志
- * 使用游标分批遍历 journals 表，根据 scimago_issn_index 判断是否收录
- * 可安全重复执行（幂等）
+ * 全量回填 journal_scimago_cache 缓存表
+ * 使用游标分批遍历 journals 表，将被 SCImago 收录的期刊 ID 写入缓存表
+ * 可安全重复执行（幂等：先清空再写入）
  */
 export async function backfillInScimagoFlag(
   onProgress?: (progress: { current: number; total: number; matched: number }) => void
 ): Promise<{ total: number; matched: number }> {
   const pool = await getDb();
 
-  // 1. 获取 journals 总数（用于进度报告）
+  // 1. 清空旧缓存，保证幂等
+  await pool.execute(`TRUNCATE TABLE journal_scimago_cache`);
+
+  // 2. 获取 journals 总数（用于进度报告）
   const [countRows] = await pool.query<RowDataPacket[]>(
     `SELECT COUNT(*) as c FROM journals`
   );
   const totalCount: number = (countRows[0] as any)?.c ?? 0;
 
-  // 2. 加载所有 SCImago ISSN 到内存（去重）
+  // 3. 加载所有 SCImago ISSN 到内存（去重）
   const [sciRows] = await pool.query<RowDataPacket[]>(
     `SELECT DISTINCT issn FROM scimago_issn_index`
   );
@@ -528,7 +532,7 @@ export async function backfillInScimagoFlag(
     `[SCImago Backfill] 加载了 ${scimagoIssns.size} 个 SCImago ISSN，共 ${totalCount} 条期刊需要处理`
   );
 
-  // 3. 使用游标（按 id 排序）分批遍历，避免 OFFSET 性能退化
+  // 4. 使用游标（按 id 排序）分批遍历，避免 OFFSET 性能退化
   const batchSize = 1000;
   let lastId = "";
   let processed = 0;
@@ -543,32 +547,21 @@ export async function backfillInScimagoFlag(
     if (rows.length === 0) break;
     lastId = rows[rows.length - 1].id;
 
-    // 分组
-    const trueIds: string[] = [];
-    const falseIds: string[] = [];
-
+    // 收集匹配的期刊 ID
+    const matchedIds: string[] = [];
     for (const row of rows) {
       if (row.issn_l && scimagoIssns.has(row.issn_l)) {
-        trueIds.push(row.id);
+        matchedIds.push(row.id);
         matched++;
-      } else {
-        falseIds.push(row.id);
       }
     }
 
-    // 批量更新
-    if (trueIds.length > 0) {
-      const ph = trueIds.map(() => "?").join(",");
+    // 批量插入到缓存表
+    if (matchedIds.length > 0) {
+      const ph = matchedIds.map(() => "(?)").join(",");
       await pool.execute(
-        `UPDATE journals SET in_scimago = TRUE WHERE id IN (${ph})`,
-        trueIds
-      );
-    }
-    if (falseIds.length > 0) {
-      const ph = falseIds.map(() => "?").join(",");
-      await pool.execute(
-        `UPDATE journals SET in_scimago = FALSE WHERE id IN (${ph})`,
-        falseIds
+        `INSERT IGNORE INTO journal_scimago_cache (journal_id) VALUES ${ph}`,
+        matchedIds
       );
     }
 
@@ -577,48 +570,37 @@ export async function backfillInScimagoFlag(
   }
 
   console.log(
-    `[SCImago Backfill] 完成: 共 ${processed} 条记录，${matched} 条匹配 SCImago`
+    `[SCImago Backfill] 完成: 共 ${processed} 条记录，${matched} 条写入缓存`
   );
   return { total: processed, matched };
 }
 
 /**
- * 增量同步 in_scimago 标志
- * 在 SCImago 数据导入后调用，只更新受影响的期刊
+ * 增量同步 journal_scimago_cache 缓存表
+ * 在 SCImago 数据导入后调用，只添加受影响的期刊
  * @param issns 新导入的 ISSN 列表
  */
-export async function syncInScimagoFlags(issns: string[]): Promise<number> {
+async function syncScimagoCache(issns: string[]): Promise<number> {
   if (issns.length === 0) return 0;
   const pool = await getDb();
 
-  let updated = 0;
+  let inserted = 0;
   const batchSize = 500;
 
   for (let i = 0; i < issns.length; i += batchSize) {
     const batch = issns.slice(i, i + batchSize);
     const ph = batch.map(() => "?").join(",");
+    // 查找 issn_l 匹配的期刊，插入缓存表
     const [result] = await pool.execute<ResultSetHeader>(
-      `UPDATE journals SET in_scimago = TRUE WHERE issn_l IN (${ph}) AND in_scimago = FALSE`,
+      `INSERT IGNORE INTO journal_scimago_cache (journal_id)
+       SELECT id FROM journals WHERE issn_l IN (${ph})`,
       batch
     );
-    updated += result.affectedRows;
+    inserted += result.affectedRows;
   }
 
-  if (updated > 0) {
-    console.log(`[SCImago Sync] 增量更新了 ${updated} 条期刊的 in_scimago 标志`);
+  if (inserted > 0) {
+    console.log(`[SCImago Sync] 增量写入 ${inserted} 条期刊到缓存表`);
   }
-  return updated;
-}
-
-/**
- * 重置所有 journals 的 in_scimago 标志为 FALSE
- * 在 SCImago 数据被完全删除后调用
- */
-async function resetInScimagoFlags(): Promise<number> {
-  const pool = await getDb();
-  const [result] = await pool.execute<ResultSetHeader>(
-    `UPDATE journals SET in_scimago = FALSE WHERE in_scimago = TRUE`
-  );
-  console.log(`[SCImago Reset] 已将 ${result.affectedRows} 条期刊的 in_scimago 重置为 FALSE`);
-  return result.affectedRows;
+  return inserted;
 }
