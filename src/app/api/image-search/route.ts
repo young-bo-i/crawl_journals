@@ -481,10 +481,10 @@ async function searchViaMirror(
   mirrorUrl: string,
   page = 0
 ): Promise<ImageSearchResult[]> {
-  // 使用用户配置的镜像站 URL 作为搜索入口
-  // 例如 http://younghome.fun:22978/imghp → http://younghome.fun:22978/imghp?q=...&tbm=isch
-  const base = mirrorUrl.replace(/\/+$/, "");
-  const searchUrl = new URL(base);
+  // 从镜像站 URL 提取 origin，使用 /search 路径进行图片搜索
+  // /imghp 是搜索首页（不含结果），/search 才返回实际搜索结果
+  const parsed = new URL(mirrorUrl);
+  const searchUrl = new URL(`${parsed.origin}/search`);
   searchUrl.searchParams.set("q", query);
   searchUrl.searchParams.set("tbm", "isch");
   searchUrl.searchParams.set("ijn", String(page));
@@ -512,9 +512,13 @@ async function searchViaMirror(
     throw new Error("RATE_LIMITED");
   }
 
-  // zmirror 会将所有 URL 重写为 http://host/extdomains/domain.com/path 格式
-  // 需要还原为原始 URL: https://domain.com/path，才能让解析正则正常工作
-  html = html.replace(/https?:\/\/[^\/\s"']+\/extdomains\//g, "https://");
+  // zmirror 会将所有 URL 重写为 http://内部地址/extdomains/domain.com/path 格式
+  // 将内部地址替换为配置的外部镜像站地址，使图片可通过镜像代理下载
+  const mirrorOrigin = new URL(mirrorUrl).origin; // e.g. http://younghome.fun:22978
+  html = html.replace(
+    /https?:\/\/[^\/\s"']+(?=\/extdomains\/)/g,
+    mirrorOrigin
+  );
 
   return parseGoogleImagesHtml(html);
 }
