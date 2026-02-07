@@ -308,8 +308,21 @@ export default function JournalsTable() {
     if (appliedFilters.minFirstYear) params.set("minFirstYear", appliedFilters.minFirstYear);
     if (appliedFilters.maxFirstYear) params.set("maxFirstYear", appliedFilters.maxFirstYear);
     
+    // 按需选列：只请求当前视图需要的字段，减少数据库 I/O
+    // 后端会自动补 id、cover_image_name、排序字段
+    const neededFields = new Set<string>(visibleColumns);
+    // 网格视图需要的备选标题字段（用于显示名称 fallback）
+    if (viewMode === "grid") {
+      neededFields.add("oa_display_name");
+      neededFields.add("cr_title");
+      neededFields.add("doaj_title");
+      neededFields.add("oa_host_organization");
+      neededFields.add("oa_country_code");
+    }
+    params.set("fields", Array.from(neededFields).join(","));
+    
     return params.toString();
-  }, [page, pageSize, appliedFilters]);
+  }, [page, pageSize, appliedFilters, visibleColumns, viewMode]);
 
   // 加载数据
   useEffect(() => {

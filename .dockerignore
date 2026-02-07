@@ -2,5 +2,7 @@ node_modules
 .next
 .npm-cache
 data
+*.tar.gz
+*.sql.gz
 .env.local
 .DS_Store

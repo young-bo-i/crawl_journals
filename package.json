@@ -38,6 +38,7 @@
     "p-limit": "^7.2.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
+    "sharp": "^0.34.5",
     "socks-proxy-agent": "^8.0.5",
     "tailwind-merge": "^3.4.0",
     "ws": "^8.19.0",

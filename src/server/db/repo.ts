@@ -139,9 +139,7 @@ export type JournalRow = {
   wikipedia_categories: string[] | null;
   wikipedia_infobox: any | null;
   
-  // 封面图片
-  cover_image: Buffer | null;
-  cover_image_type: string | null;
+  // 封面图片（图片数据存储在 journal_covers 表，此处仅保留文件名用于筛选）
   cover_image_name: string | null;
   
   // 用户自定义字段
@@ -181,10 +179,15 @@ const JOURNAL_SELECT_FIELDS = `
   wikidata_has_entity, wikidata_homepage,
   wikipedia_has_article, wikipedia_article_title, wikipedia_extract, wikipedia_description,
   wikipedia_thumbnail, wikipedia_categories, wikipedia_infobox,
-  cover_image_type, cover_image_name,
+  cover_image_name,
   custom_title, custom_publisher, custom_country, custom_homepage, custom_description, custom_notes, custom_updated_at,
   created_at, updated_at
 `.replace(/\s+/g, " ").trim();
+
+// 允许的字段白名单（从 JOURNAL_SELECT_FIELDS 解析，防 SQL 注入）
+const ALLOWED_FIELDS = new Set(
+  JOURNAL_SELECT_FIELDS.split(",").map((f) => f.trim())
+);
 
 export type CrawlRunRow = {
   id: string;
@@ -750,11 +753,9 @@ export async function queryJournals(args: QueryJournalsArgs): Promise<{ total: n
     
     where.push(`(
       id LIKE ? OR issn_l LIKE ? OR doaj_eissn LIKE ? OR doaj_pissn LIKE ?
-      OR MATCH(oa_display_name) AGAINST(? IN BOOLEAN MODE)
-      OR MATCH(cr_title) AGAINST(? IN BOOLEAN MODE)
-      OR MATCH(doaj_title) AGAINST(? IN BOOLEAN MODE)
+      OR MATCH(oa_display_name, cr_title, doaj_title) AGAINST(? IN BOOLEAN MODE)
     )`);
-    params.push(like, like, like, like, phraseQuery, phraseQuery, phraseQuery);
+    params.push(like, like, like, like, phraseQuery);
   }
   
   // 布尔筛选
@@ -824,30 +825,23 @@ export async function queryJournals(args: QueryJournalsArgs): Promise<{ total: n
     }
   }
 
-  // SCImago 筛选：使用缓存表 JOIN，避免关联子查询
-  const joins: string[] = [];
-  if (args.inScimago !== undefined) {
-    if (args.inScimago) {
-      joins.push(
-        "INNER JOIN journal_scimago_cache _jsc ON _jsc.journal_id = journals.id"
-      );
-    } else {
-      joins.push(
-        "LEFT JOIN journal_scimago_cache _jsc ON _jsc.journal_id = journals.id"
-      );
-      where.push("_jsc.journal_id IS NULL");
-    }
-  }
+  // SCImago 筛选
+  // SELECT 查询用 EXISTS + FORCE INDEX，配合 LIMIT 实现 early termination
+  // COUNT 查询用 JOIN 从小表出发 + 覆盖索引，避免读 1.6GB 聚簇索引
+  const scimagoExistsClause = args.inScimago === true
+    ? "EXISTS (SELECT 1 FROM journal_scimago_cache WHERE journal_id = journals.id)"
+    : args.inScimago === false
+      ? "NOT EXISTS (SELECT 1 FROM journal_scimago_cache WHERE journal_id = journals.id)"
+      : null;
 
-  const joinSql = joins.length ? joins.join(" ") : "";
-  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-  
-  // 统计总数
-  const countRow = await queryOne<RowDataPacket>(
-    `SELECT COUNT(1) as c FROM journals ${joinSql} ${whereSql}`,
-    params
-  );
-  const total = countRow?.c ?? 0;
+  // where 数组只放非 SCImago 条件（给 COUNT 的 JOIN 策略用）
+  // selectWhere 包含全部条件（给 SELECT 用）
+  const selectWhere = scimagoExistsClause
+    ? [...where, scimagoExistsClause]
+    : [...where];
+
+  const whereSql = selectWhere.length ? `WHERE ${selectWhere.join(" AND ")}` : "";
+  const nonScimagoWhereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
   // 排序（安全验证）
   let sortBy = args.sortBy || "updated_at";
@@ -857,17 +851,130 @@ export async function queryJournals(args: QueryJournalsArgs): Promise<{ total: n
   const sortOrder = args.sortOrder === "asc" ? "ASC" : "DESC";
   const orderBy = `ORDER BY journals.${sortBy} ${sortOrder}`;
 
-  // 字段选择（默认不包含 BLOB 字段 cover_image）
-  const selectFields = args.fields?.length
-    ? args.fields.map((f) => `journals.${f}`).join(", ")
-    : JOURNAL_SELECT_FIELDS.split(", ").map((f) => `journals.${f.trim()}`).join(", ");
+  // 排序字段 → 索引名映射（用于 FORCE INDEX 提示）
+  const SORT_FIELD_INDEX: Record<string, string> = {
+    updated_at: "idx_updated_at",
+    created_at: "idx_created_at",
+    oa_works_count: "idx_oa_works_count",
+    oa_cited_by_count: "idx_oa_cited_by_count",
+    oa_apc_usd: "idx_oa_apc_usd",
+    oa_first_publication_year: "idx_oa_first_publication_year",
+    oa_last_publication_year: "idx_oa_last_publication_year",
+    oa_oa_works_count: "idx_oa_oa_works_count",
+    oa_created_date: "idx_oa_created_date",
+    oa_updated_date: "idx_oa_updated_date",
+    doaj_publication_time_weeks: "idx_doaj_publication_time_weeks",
+  };
 
-  // 分页查询
+  // 当存在 EXISTS 子查询（如 inScimago）时，MySQL 优化器倾向于从小表驱动+filesort
+  // 使用 FORCE INDEX 强制走排序字段索引，配合 LIMIT 实现 early termination
+  //
+  // 特殊优化：当 hasCover + sortBy=updated_at/created_at 同时存在时，
+  // 使用复合索引 idx_cover_updated (cover_image_name, updated_at)
+  // 这样 MySQL 可以在索引内同时完成过滤+排序，不读 1.6GB 聚簇索引
+  let forceIndex = "";
+  if (args.inScimago !== undefined) {
+    if (args.hasCover !== undefined && (sortBy === "updated_at" || sortBy === "created_at")) {
+      // 复合索引覆盖 cover_image_name 过滤 + updated_at 排序
+      forceIndex = "FORCE INDEX (idx_cover_updated)";
+    } else if (SORT_FIELD_INDEX[sortBy]) {
+      forceIndex = `FORCE INDEX (${SORT_FIELD_INDEX[sortBy]})`;
+    }
+  }
+
+  // 字段选择
+  // 前端可传 fields 参数指定需要的列，减少聚簇索引读取量
+  // 始终包含 id（主键）、cover_image_name（封面判断）和排序字段
+  let selectFields: string;
+  if (args.fields?.length) {
+    const requested = new Set(args.fields.filter((f) => ALLOWED_FIELDS.has(f)));
+    // 强制包含必需字段
+    requested.add("id");
+    requested.add("cover_image_name");
+    requested.add(sortBy);
+    selectFields = Array.from(requested).map((f) => `journals.${f}`).join(", ");
+  } else {
+    selectFields = JOURNAL_SELECT_FIELDS.split(",").map((f) => `journals.${f.trim()}`).join(", ");
+  }
+
+  // === 并行执行 COUNT 和 SELECT ===
+  // COUNT 和 SELECT 互不依赖，并行可将总耗时从 (COUNT + SELECT) 降为 max(COUNT, SELECT)
+
+  // COUNT 查询 —— 根据筛选条件选择最优策略
+  //
+  // 核心问题：journals 聚簇索引 1613MB，512MB buffer pool 放不下 → 随机读极慢
+  // 核心方案：走二级索引（5-10MB）做覆盖查询，完全避免读数据页
+  //
+  // InnoDB 二级索引自动包含主键 (id)，因此 JOIN ON j.id = _jsc.journal_id
+  // 可以在二级索引上完成，只要 WHERE 条件也在该索引中（= 覆盖索引）
+  //
+  // 筛选条件 → 最佳覆盖索引映射
+  const FILTER_INDEX_MAP: Record<string, string> = {
+    hasCover: "idx_cover_image_name",
+    inDoaj: "idx_oa_is_in_doaj",
+    inNlm: "idx_nlm_in_catalog",
+    hasWikidata: "idx_wikidata_has_entity",
+    hasWikipedia: "idx_wikipedia_has_article",
+    isOpenAccess: "idx_oa_is_oa",
+    isOa: "idx_oa_is_oa",
+    isCore: "idx_oa_is_core",
+    inScielo: "idx_oa_is_in_scielo",
+    isOjs: "idx_oa_is_ojs",
+    doajBoai: "idx_doaj_boai",
+    country: "idx_doaj_country",
+    oaType: "idx_oa_type",
+  };
+
+  // 从当前筛选条件中选出最佳覆盖索引
+  const pickCoveringIndex = (): string => {
+    for (const [argKey, idxName] of Object.entries(FILTER_INDEX_MAP)) {
+      if ((args as any)[argKey] !== undefined) return idxName;
+    }
+    return "";
+  };
+
+  const countPromise = (async () => {
+    if (args.inScimago === true) {
+      if (where.length === 0) {
+        // 仅 inScimago=true → 直接 COUNT 小表（2.5MB，<1ms）
+        const r = await queryOne<RowDataPacket>(
+          `SELECT COUNT(1) as c FROM journal_scimago_cache`, []
+        );
+        return r?.c ?? 0;
+      }
+      // inScimago=true + 其他条件 → 从小表 JOIN journals + 覆盖索引
+      // 34K 次索引点查（5-10MB 在内存）vs 34K 次聚簇索引随机读（1.6GB 不在内存）
+      const coverIdx = pickCoveringIndex();
+      const indexHint = coverIdx ? `USE INDEX (${coverIdx})` : "";
+      const joinConditions = where.map(c =>
+        c.replace(/\bjournals\./g, "j.")
+      );
+      const joinWhereSql = joinConditions.length
+        ? `WHERE ${joinConditions.join(" AND ")}`
+        : "";
+      const r = await queryOne<RowDataPacket>(
+        `SELECT COUNT(1) as c FROM journal_scimago_cache _jsc
+         INNER JOIN journals j ${indexHint} ON j.id = _jsc.journal_id
+         ${joinWhereSql}`,
+        params
+      );
+      return r?.c ?? 0;
+    }
+    // 无 inScimago 或 inScimago=false：直接 COUNT journals 表
+    const r = await queryOne<RowDataPacket>(
+      `SELECT COUNT(1) as c FROM journals ${whereSql}`, params
+    );
+    return r?.c ?? 0;
+  })();
+
+  // SELECT 查询
   const offset = (args.page - 1) * args.pageSize;
-  const rows = await query<RowDataPacket[]>(
-    `SELECT ${selectFields} FROM journals ${joinSql} ${whereSql} ${orderBy} LIMIT ? OFFSET ?`,
+  const rowsPromise = query<RowDataPacket[]>(
+    `SELECT ${selectFields} FROM journals ${forceIndex} ${whereSql} ${orderBy} LIMIT ? OFFSET ?`,
     [...params, args.pageSize, offset]
   );
+
+  const [total, rows] = await Promise.all([countPromise, rowsPromise]);
 
   return { total, rows: rows.map(parseJournalRow) };
 }
@@ -1108,6 +1215,24 @@ export async function updateJournalCoverImage(
   mimeType: string,
   fileName: string
 ): Promise<boolean> {
+  // 自动转换非 WebP 图片为 WebP 格式（节省约 40-60% 空间）
+  if (mimeType !== "image/webp") {
+    try {
+      const sharp = (await import("sharp")).default;
+      const webpBuffer = await sharp(image).webp({ quality: 80 }).toBuffer();
+      // 只在转换后更小时替换（极少数情况下 WebP 可能更大）
+      if (webpBuffer.length < image.length) {
+        image = webpBuffer;
+      }
+      mimeType = "image/webp";
+      fileName = fileName.replace(/\.(jpe?g|png|gif)$/i, ".webp");
+      if (!fileName.endsWith(".webp")) fileName += ".webp";
+    } catch (err) {
+      // 转换失败时保留原格式，不影响保存
+      console.warn(`[cover] WebP conversion failed for ${journalId}, saving original format:`, (err as Error).message);
+    }
+  }
+
   // 写入独立的封面表（INSERT 或 UPDATE）
   await execute(
     `INSERT INTO journal_covers (journal_id, image, image_type, image_name)
@@ -1149,26 +1274,12 @@ export async function getJournalCoverImage(
     [journalId]
   );
 
-  if (row?.image) {
-    return {
-      image: row.image,
-      mimeType: row.image_type || "image/jpeg",
-      fileName: row.image_name || "cover.jpg",
-    };
-  }
-
-  // 兼容回退：迁移期间旧数据可能仍在 journals 表中
-  const fallback = await queryOne<RowDataPacket>(
-    `SELECT cover_image, cover_image_type, cover_image_name FROM journals WHERE id = ?`,
-    [journalId]
-  );
-
-  if (!fallback || !fallback.cover_image) return null;
+  if (!row?.image) return null;
 
   return {
-    image: fallback.cover_image,
-    mimeType: fallback.cover_image_type || "image/jpeg",
-    fileName: fallback.cover_image_name || "cover.jpg",
+    image: row.image,
+    mimeType: row.image_type || "image/jpeg",
+    fileName: row.image_name || "cover.jpg",
   };
 }
 
@@ -1180,112 +1291,26 @@ export async function hasJournalCoverImage(journalId: string): Promise<boolean> 
   return !!row;
 }
 
-// ============ 封面数据迁移 ============
+// ============ 封面数据迁移（已完成，cover_image / cover_image_type 列已删除） ============
 
 /**
- * 清理已迁移但旧表 BLOB 未清空的残留数据
- * 场景：上次迁移执行到一半中断，部分记录已 INSERT 到 journal_covers 但旧 BLOB 未 NULL
- * @returns 清理条数
+ * @deprecated 迁移已完成，cover_image 列已从 journals 表删除，此函数不再需要
  */
 export async function cleanupMigratedCoverBlobs(
-  onProgress?: (cleaned: number) => void
+  _onProgress?: (cleaned: number) => void
 ): Promise<number> {
-  const pool = await getDb();
-  let totalCleaned = 0;
-
-  while (true) {
-    // 找到已存在于 journal_covers 但 journals.cover_image 还没清空的
-    const [rows] = await pool.query<RowDataPacket[]>(
-      `SELECT j.id FROM journals j
-       INNER JOIN journal_covers jc ON jc.journal_id = j.id
-       WHERE j.cover_image IS NOT NULL
-       LIMIT 500`
-    );
-
-    if (rows.length === 0) break;
-
-    const ids = rows.map((r: any) => r.id);
-    const ph = ids.map(() => "?").join(",");
-    await pool.execute(
-      `UPDATE journals SET cover_image = NULL, cover_image_type = NULL
-       WHERE id IN (${ph})`,
-      ids
-    );
-
-    totalCleaned += ids.length;
-    onProgress?.(totalCleaned);
-  }
-
-  if (totalCleaned > 0) {
-    console.log(`[Cover Cleanup] 清理了 ${totalCleaned} 条已迁移的旧 BLOB`);
-  }
-  return totalCleaned;
+  console.log("[Cover Cleanup] 迁移已完成，无需清理");
+  return 0;
 }
 
 /**
- * 批量迁移封面数据：从 journals 表搬到 journal_covers 表
- * 每批 500 条：INSERT 到新表 → 批量 NULL 掉旧表 BLOB
- * 断点续传：跳过已迁移的记录，可安全重复调用
- * @returns 总迁移条数
+ * @deprecated 迁移已完成，cover_image 列已从 journals 表删除，此函数不再需要
  */
 export async function migrateCoverImages(
-  onProgress?: (migrated: number) => void
+  _onProgress?: (migrated: number) => void
 ): Promise<number> {
-  const pool = await getDb();
-
-  // 第一步：先清理上次中断留下的残留（已迁移但旧 BLOB 未清空的）
-  const cleaned = await cleanupMigratedCoverBlobs((n) => {
-    console.log(`[Cover Migration] 清理残留: ${n} 条`);
-  });
-
-  // 第二步：继续迁移剩余的
-  let totalMigrated = 0;
-  const batchSize = 500;
-
-  while (true) {
-    // 取一批还没迁移的（journals 上有 BLOB 且 journal_covers 中不存在的）
-    const [rows] = await pool.query<RowDataPacket[]>(
-      `SELECT j.id, j.cover_image, j.cover_image_type, j.cover_image_name
-       FROM journals j
-       LEFT JOIN journal_covers jc ON jc.journal_id = j.id
-       WHERE j.cover_image IS NOT NULL AND jc.journal_id IS NULL
-       LIMIT ?`,
-      [batchSize]
-    );
-
-    if (rows.length === 0) break;
-
-    // 批量 INSERT 到新表
-    for (const row of rows) {
-      await pool.execute(
-        `INSERT IGNORE INTO journal_covers (journal_id, image, image_type, image_name)
-         VALUES (?, ?, ?, ?)`,
-        [
-          row.id,
-          row.cover_image,
-          row.cover_image_type || "image/jpeg",
-          row.cover_image_name || "cover.jpg",
-        ]
-      );
-    }
-
-    // 批量清空旧表 BLOB
-    const ids = rows.map((r: any) => r.id);
-    const ph = ids.map(() => "?").join(",");
-    await pool.execute(
-      `UPDATE journals SET cover_image = NULL, cover_image_type = NULL
-       WHERE id IN (${ph})`,
-      ids
-    );
-
-    totalMigrated += rows.length;
-    onProgress?.(totalMigrated);
-  }
-
-  console.log(
-    `[Cover Migration] 完成: 清理残留 ${cleaned} 条, 新迁移 ${totalMigrated} 条`
-  );
-  return totalMigrated;
+  console.log("[Cover Migration] 迁移已完成，无需执行");
+  return 0;
 }
 
 // ============ 图片搜索缓存 ============
