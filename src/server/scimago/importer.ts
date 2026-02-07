@@ -506,73 +506,34 @@ export async function deleteScimagoData(): Promise<{ deleted: number; indexDelet
 
 /**
  * 全量回填 journal_scimago_cache 缓存表
- * 使用游标分批遍历 journals 表，将被 SCImago 收录的期刊 ID 写入缓存表
+ * 一条 SQL 完成：JOIN journals 与 scimago_issn_index，将匹配的期刊 ID 写入缓存表
  * 可安全重复执行（幂等：先清空再写入）
  */
-export async function backfillInScimagoFlag(
-  onProgress?: (progress: { current: number; total: number; matched: number }) => void
-): Promise<{ total: number; matched: number }> {
+export async function backfillInScimagoFlag(): Promise<{ total: number; matched: number }> {
   const pool = await getDb();
 
   // 1. 清空旧缓存，保证幂等
   await pool.execute(`TRUNCATE TABLE journal_scimago_cache`);
 
-  // 2. 获取 journals 总数（用于进度报告）
+  // 2. 一条 SQL 完成回填：在 MySQL 内部 JOIN 后直接 INSERT，零数据传输
+  const [result] = await pool.execute<ResultSetHeader>(
+    `INSERT IGNORE INTO journal_scimago_cache (journal_id)
+     SELECT DISTINCT j.id
+     FROM journals j
+     INNER JOIN scimago_issn_index s ON s.issn = j.issn_l`
+  );
+  const matched = result.affectedRows;
+
+  // 3. 获取 journals 总数用于返回
   const [countRows] = await pool.query<RowDataPacket[]>(
     `SELECT COUNT(*) as c FROM journals`
   );
-  const totalCount: number = (countRows[0] as any)?.c ?? 0;
-
-  // 3. 加载所有 SCImago ISSN 到内存（去重）
-  const [sciRows] = await pool.query<RowDataPacket[]>(
-    `SELECT DISTINCT issn FROM scimago_issn_index`
-  );
-  const scimagoIssns = new Set(sciRows.map((r: any) => r.issn as string));
-  console.log(
-    `[SCImago Backfill] 加载了 ${scimagoIssns.size} 个 SCImago ISSN，共 ${totalCount} 条期刊需要处理`
-  );
-
-  // 4. 使用游标（按 id 排序）分批遍历，避免 OFFSET 性能退化
-  const batchSize = 1000;
-  let lastId = "";
-  let processed = 0;
-  let matched = 0;
-
-  while (true) {
-    const [rows] = await pool.query<RowDataPacket[]>(
-      `SELECT id, issn_l FROM journals WHERE id > ? ORDER BY id LIMIT ?`,
-      [lastId, batchSize]
-    );
-
-    if (rows.length === 0) break;
-    lastId = rows[rows.length - 1].id;
-
-    // 收集匹配的期刊 ID
-    const matchedIds: string[] = [];
-    for (const row of rows) {
-      if (row.issn_l && scimagoIssns.has(row.issn_l)) {
-        matchedIds.push(row.id);
-        matched++;
-      }
-    }
-
-    // 批量插入到缓存表
-    if (matchedIds.length > 0) {
-      const ph = matchedIds.map(() => "(?)").join(",");
-      await pool.execute(
-        `INSERT IGNORE INTO journal_scimago_cache (journal_id) VALUES ${ph}`,
-        matchedIds
-      );
-    }
-
-    processed += rows.length;
-    onProgress?.({ current: processed, total: totalCount, matched });
-  }
+  const total: number = (countRows[0] as any)?.c ?? 0;
 
   console.log(
-    `[SCImago Backfill] 完成: 共 ${processed} 条记录，${matched} 条写入缓存`
+    `[SCImago Backfill] 完成: 共 ${total} 条期刊，${matched} 条写入缓存`
   );
-  return { total: processed, matched };
+  return { total, matched };
 }
 
 /**
