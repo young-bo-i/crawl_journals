@@ -1183,32 +1183,109 @@ export async function hasJournalCoverImage(journalId: string): Promise<boolean> 
 // ============ 封面数据迁移 ============
 
 /**
- * 将 journals 表中的封面数据迁移到 journal_covers 表
- * 一条 SQL 完成，MySQL 内部执行，零数据传输
+ * 清理已迁移但旧表 BLOB 未清空的残留数据
+ * 场景：上次迁移执行到一半中断，部分记录已 INSERT 到 journal_covers 但旧 BLOB 未 NULL
+ * @returns 清理条数
  */
-export async function migrateCoverImages(): Promise<number> {
-  const result = await execute(
-    `INSERT IGNORE INTO journal_covers (journal_id, image, image_type, image_name)
-     SELECT id, cover_image, COALESCE(cover_image_type, 'image/jpeg'), COALESCE(cover_image_name, 'cover.jpg')
-     FROM journals
-     WHERE cover_image IS NOT NULL`
-  );
-  console.log(`[Cover Migration] 迁移了 ${result.affectedRows} 条封面到 journal_covers 表`);
-  return result.affectedRows;
+export async function cleanupMigratedCoverBlobs(
+  onProgress?: (cleaned: number) => void
+): Promise<number> {
+  const pool = await getDb();
+  let totalCleaned = 0;
+
+  while (true) {
+    // 找到已存在于 journal_covers 但 journals.cover_image 还没清空的
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT j.id FROM journals j
+       INNER JOIN journal_covers jc ON jc.journal_id = j.id
+       WHERE j.cover_image IS NOT NULL
+       LIMIT 500`
+    );
+
+    if (rows.length === 0) break;
+
+    const ids = rows.map((r: any) => r.id);
+    const ph = ids.map(() => "?").join(",");
+    await pool.execute(
+      `UPDATE journals SET cover_image = NULL, cover_image_type = NULL
+       WHERE id IN (${ph})`,
+      ids
+    );
+
+    totalCleaned += ids.length;
+    onProgress?.(totalCleaned);
+  }
+
+  if (totalCleaned > 0) {
+    console.log(`[Cover Cleanup] 清理了 ${totalCleaned} 条已迁移的旧 BLOB`);
+  }
+  return totalCleaned;
 }
 
 /**
- * 分批清空 journals 表中的旧 BLOB 数据
- * 每次处理 batchSize 行，返回本批实际处理数量
- * 返回 0 表示全部清理完毕
+ * 批量迁移封面数据：从 journals 表搬到 journal_covers 表
+ * 每批 500 条：INSERT 到新表 → 批量 NULL 掉旧表 BLOB
+ * 断点续传：跳过已迁移的记录，可安全重复调用
+ * @returns 总迁移条数
  */
-export async function cleanupOldCoverBlobs(batchSize: number = 100): Promise<number> {
-  const result = await execute(
-    `UPDATE journals SET cover_image = NULL, cover_image_type = NULL
-     WHERE cover_image IS NOT NULL LIMIT ?`,
-    [batchSize]
+export async function migrateCoverImages(
+  onProgress?: (migrated: number) => void
+): Promise<number> {
+  const pool = await getDb();
+
+  // 第一步：先清理上次中断留下的残留（已迁移但旧 BLOB 未清空的）
+  const cleaned = await cleanupMigratedCoverBlobs((n) => {
+    console.log(`[Cover Migration] 清理残留: ${n} 条`);
+  });
+
+  // 第二步：继续迁移剩余的
+  let totalMigrated = 0;
+  const batchSize = 500;
+
+  while (true) {
+    // 取一批还没迁移的（journals 上有 BLOB 且 journal_covers 中不存在的）
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT j.id, j.cover_image, j.cover_image_type, j.cover_image_name
+       FROM journals j
+       LEFT JOIN journal_covers jc ON jc.journal_id = j.id
+       WHERE j.cover_image IS NOT NULL AND jc.journal_id IS NULL
+       LIMIT ?`,
+      [batchSize]
+    );
+
+    if (rows.length === 0) break;
+
+    // 批量 INSERT 到新表
+    for (const row of rows) {
+      await pool.execute(
+        `INSERT IGNORE INTO journal_covers (journal_id, image, image_type, image_name)
+         VALUES (?, ?, ?, ?)`,
+        [
+          row.id,
+          row.cover_image,
+          row.cover_image_type || "image/jpeg",
+          row.cover_image_name || "cover.jpg",
+        ]
+      );
+    }
+
+    // 批量清空旧表 BLOB
+    const ids = rows.map((r: any) => r.id);
+    const ph = ids.map(() => "?").join(",");
+    await pool.execute(
+      `UPDATE journals SET cover_image = NULL, cover_image_type = NULL
+       WHERE id IN (${ph})`,
+      ids
+    );
+
+    totalMigrated += rows.length;
+    onProgress?.(totalMigrated);
+  }
+
+  console.log(
+    `[Cover Migration] 完成: 清理残留 ${cleaned} 条, 新迁移 ${totalMigrated} 条`
   );
-  return result.affectedRows;
+  return totalMigrated;
 }
 
 // ============ 图片搜索缓存 ============
