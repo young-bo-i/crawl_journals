@@ -12,11 +12,6 @@ import {
   queryJournals,
   hasJournalCoverImage,
   updateJournalCoverImage,
-  upsertImageSearchCache,
-  updateImageSearchCacheStatus,
-  getImageSearchCache,
-  getPendingImageSearchCaches,
-  getImageSearchCacheStats,
   type QueryJournalsArgs,
   type SortField,
   type SortOrder,
@@ -246,6 +241,7 @@ async function processInBackground(
 
   // ---- 2. 并发处理（并发 5） ----
   const CONCURRENCY = 5;
+  const MAX_PAGES = 5; // 每个期刊最多搜索 5 页
 
   let processedSoFar = 0;
 
@@ -268,100 +264,68 @@ async function processInBackground(
         return;
       }
 
-      // 2b. 先查缓存：是否有之前搜索过但下载失败的结果
-      let results: ImageSearchResult[] | null = null;
-      let triedIndices = new Set<number>();
-      let fromCache = false;
+      const searchQuery = journal.name + " journal cover";
+      let downloaded = false;
 
-      const cached = await getImageSearchCache(journal.id);
-      if (cached && cached.status === "pending" && cached.result_count > 0) {
-        // 有缓存，直接用，不消耗 API 次数
-        try {
-          results = typeof cached.results_json === "string"
-            ? JSON.parse(cached.results_json)
-            : cached.results_json;
-          const cachedTried: number[] = cached.tried_indices
-            ? (typeof cached.tried_indices === "string"
-                ? JSON.parse(cached.tried_indices)
-                : cached.tried_indices)
-            : [];
-          triedIndices = new Set(cachedTried);
-          fromCache = true;
-          console.log(`${logPrefix} 使用缓存搜索结果 (${results!.length} candidates, ${triedIndices.size} tried) | name=${journal.name}`);
-        } catch {
-          results = null; // 缓存解析失败，重新搜索
-        }
-      }
+      // 2b. 逐页搜索 + 下载，每页尝试全部候选，最多 MAX_PAGES 页
+      for (let pageIdx = 0; pageIdx < MAX_PAGES; pageIdx++) {
+        if (task.stopRequested) break;
 
-      // 2c. 没有缓存或缓存无效，调用搜索 API
-      if (!results) {
-        console.log(`${logPrefix} searching images for: ${journal.name}`);
+        console.log(`${logPrefix} searching page ${pageIdx + 1}/${MAX_PAGES} for: ${journal.name}`);
         const searchStart = Date.now();
-        const searchQuery = journal.name + " journal cover";
-        results = await performImageSearch(searchQuery);
-        console.log(`${logPrefix} search returned ${results.length} results in ${Date.now() - searchStart}ms`);
+        let results: ImageSearchResult[];
+        try {
+          results = await performImageSearch(searchQuery, pageIdx);
+        } catch (searchErr: any) {
+          console.warn(`${logPrefix} page ${pageIdx + 1} search error: ${searchErr?.message}`);
+          break; // 搜索出错，停止翻页
+        }
+        console.log(`${logPrefix} page ${pageIdx + 1} returned ${results.length} results in ${Date.now() - searchStart}ms`);
 
         if (results.length === 0) {
-          console.warn(`${logPrefix} FAILED: 搜索无结果 (${journal.name})`);
-          task.progress.failCount++;
-          task.progress.current++;
-          task.progress.currentName = journal.name;
-          broadcastProgress();
-          return;
+          if (pageIdx === 0) {
+            console.warn(`${logPrefix} FAILED: 搜索无结果 (${journal.name})`);
+          } else {
+            console.log(`${logPrefix} page ${pageIdx + 1} 无更多结果，停止翻页`);
+          }
+          break; // 无结果，停止翻页
         }
 
-        // 搜索成功，立即保存到数据库缓存（不管下载是否成功）
-        await upsertImageSearchCache(
-          journal.id,
-          journal.name,
-          searchQuery,
-          results,
-          [],
-          "pending"
-        );
-        console.log(`${logPrefix} 搜索结果已缓存到数据库 (${results.length} candidates)`);
+        if (task.stopRequested) break;
+
+        // 候选图片按面积降序排序
+        const sorted = results
+          .map((r, i) => ({ ...r, _origIdx: i }))
+          .sort(
+            (a, b) =>
+              (b.width || 0) * (b.height || 0) -
+              (a.width || 0) * (a.height || 0)
+          );
+
+        // 优先尝试前 3 个候选
+        const TOP_N = 3;
+        const topCandidates = sorted.slice(0, TOP_N);
+        const restCandidates = sorted.slice(TOP_N);
+
+        let ok = await tryDownloadCandidates(journal, topCandidates, logPrefix, task);
+
+        if (!ok && restCandidates.length > 0 && !task.stopRequested) {
+          // 前 3 个都失败了，继续尝试该页剩余候选
+          console.log(`${logPrefix} page ${pageIdx + 1} 前 ${TOP_N} 个候选失败，尝试剩余 ${restCandidates.length} 个...`);
+          ok = await tryDownloadCandidates(journal, restCandidates, logPrefix, task);
+        }
+
+        if (ok) {
+          downloaded = true;
+          break; // 下载成功，停止翻页
+        }
+
+        console.log(`${logPrefix} page ${pageIdx + 1} 所有候选下载失败，继续下一页...`);
       }
 
-      if (task.stopRequested) return;
-
-      // 2d. 候选图片按面积降序排序，第一轮尝试前 6 张未试过的
-      const sorted = results
-        .map((r, i) => ({ ...r, _origIdx: i }))
-        .filter((r) => !triedIndices.has(r._origIdx))
-        .sort(
-          (a, b) =>
-            (b.width || 0) * (b.height || 0) -
-            (a.width || 0) * (a.height || 0)
-        );
-
-      const firstRoundCandidates = sorted.slice(0, 6);
-
-      if (firstRoundCandidates.length === 0) {
-        console.warn(`${logPrefix} 所有候选图片均已尝试过 | name=${journal.name}`);
-        await updateImageSearchCacheStatus(journal.id, [...triedIndices], "failed");
+      if (!downloaded && !task.stopRequested) {
+        console.error(`${logPrefix} FAILED: ${MAX_PAGES} 页内所有候选均下载失败 | name=${journal.name}`);
         task.progress.failCount++;
-        task.progress.current++;
-        task.progress.currentName = journal.name;
-        broadcastProgress();
-        return;
-      }
-
-      const ok = await tryDownloadCandidates(
-        journal,
-        firstRoundCandidates,
-        triedIndices,
-        logPrefix,
-        task
-      );
-
-      if (ok) {
-        // 下载成功，更新缓存状态为 downloaded
-        await updateImageSearchCacheStatus(journal.id, [...triedIndices], "downloaded");
-      } else if (!task.stopRequested) {
-        // 第一轮失败，更新缓存中已尝试的索引，保持 pending 状态
-        await updateImageSearchCacheStatus(journal.id, [...triedIndices], "pending");
-        console.log(`${logPrefix} 第一轮下载失败，已更新缓存 (tried: ${triedIndices.size}/${results.length}) | name=${journal.name}`);
-        // 暂时不计入 failCount，等重试阶段再处理
       }
     } catch (err: any) {
       console.error(`${logPrefix} FAILED: ${err?.message} | name=${journal.name} | stack=${err?.stack?.split("\n")[1]?.trim() ?? ""}`);
@@ -373,112 +337,9 @@ async function processInBackground(
     broadcastProgress();
   };
 
-  // 并发池执行第一轮
-  console.log(`[batch-cover] ===== Starting processing, concurrency=${CONCURRENCY} =====`);
+  // 并发池执行
+  console.log(`[batch-cover] ===== Starting processing, concurrency=${CONCURRENCY}, maxPages=${MAX_PAGES} =====`);
   await runConcurrentPool(allJournals.map((j) => () => processSingle(j)), CONCURRENCY, task);
-
-  // ---- 3. 重试阶段：从数据库读取 pending 的缓存，用剩余候选重试 ----
-  if (!task.stopRequested) {
-    const pendingCaches = await getPendingImageSearchCaches(10000);
-    // 只重试本次任务涉及的期刊
-    const journalIdSet = new Set(allJournals.map((j) => j.id));
-    const retryItems = pendingCaches.filter((c) => journalIdSet.has(c.journal_id));
-
-    if (retryItems.length > 0) {
-      console.log(`[batch-cover] ===== Retry phase: ${retryItems.length} items from DB cache =====`);
-      task.progress.currentName = `重试下载阶段 (${retryItems.length} 个待重试)...`;
-      broadcastProgress(true);
-
-      let retrySuccess = 0;
-      let retryFail = 0;
-
-      const retryOne = async (cacheRow: typeof retryItems[0]) => {
-        if (task.stopRequested) return;
-
-        const logPrefix = `[batch-cover][retry] ${cacheRow.journal_id}`;
-
-        try {
-          // 再次检查是否已有封面
-          const hasCover = await hasJournalCoverImage(cacheRow.journal_id);
-          if (hasCover) {
-            console.log(`${logPrefix} already has cover now, skip`);
-            await updateImageSearchCacheStatus(cacheRow.journal_id, [], "downloaded");
-            task.progress.skipCount++;
-            return;
-          }
-
-          const results: ImageSearchResult[] = typeof cacheRow.results_json === "string"
-            ? JSON.parse(cacheRow.results_json)
-            : cacheRow.results_json;
-          const cachedTried: number[] = cacheRow.tried_indices
-            ? (typeof cacheRow.tried_indices === "string"
-                ? JSON.parse(cacheRow.tried_indices)
-                : cacheRow.tried_indices)
-            : [];
-          const triedIndices = new Set(cachedTried);
-
-          // 尝试所有未试过的候选
-          const remaining = results
-            .map((r, i) => ({ ...r, _origIdx: i }))
-            .filter((_, i) => !triedIndices.has(i))
-            .sort(
-              (a, b) =>
-                (b.width || 0) * (b.height || 0) -
-                (a.width || 0) * (a.height || 0)
-            );
-
-          if (remaining.length === 0) {
-            console.warn(`${logPrefix} no remaining candidates | name=${cacheRow.journal_name}`);
-            await updateImageSearchCacheStatus(cacheRow.journal_id, [...triedIndices], "failed");
-            task.progress.failCount++;
-            retryFail++;
-            return;
-          }
-
-          const journalObj = {
-            id: cacheRow.journal_id,
-            name: cacheRow.journal_name || "Unknown",
-          };
-
-          console.log(`${logPrefix} retrying ${remaining.length} untried candidates | name=${journalObj.name}`);
-          const ok = await tryDownloadCandidates(
-            journalObj,
-            remaining,
-            triedIndices,
-            logPrefix,
-            task
-          );
-
-          if (ok) {
-            await updateImageSearchCacheStatus(cacheRow.journal_id, [...triedIndices], "downloaded");
-            retrySuccess++;
-          } else {
-            await updateImageSearchCacheStatus(cacheRow.journal_id, [...triedIndices], "failed");
-            console.error(`${logPrefix} FAILED after retry: 所有候选图片均下载失败 | name=${journalObj.name}`);
-            task.progress.failCount++;
-            retryFail++;
-          }
-        } catch (err: any) {
-          console.error(`${logPrefix} retry error: ${err?.message} | name=${cacheRow.journal_name}`);
-          task.progress.failCount++;
-          retryFail++;
-        }
-
-        task.progress.currentName = `重试: ${cacheRow.journal_name || cacheRow.journal_id}`;
-        broadcastProgress();
-      };
-
-      await runConcurrentPool(retryItems.map((item) => () => retryOne(item)), CONCURRENCY, task);
-
-      console.log(`[batch-cover] Retry phase done: success=${retrySuccess}, fail=${retryFail}`);
-    }
-  }
-
-  // 打印缓存统计
-  try {
-    const stats = await getImageSearchCacheStats();
-    console.log(`[batch-cover] Cache stats: total=${stats.total}, pending=${stats.pending}, downloaded=${stats.downloaded}, failed=${stats.failed}`);
-  } catch { /* ignore */ }
 
   task.progress.status = task.stopRequested ? "stopped" : "completed";
   broadcastProgress(true);
@@ -495,7 +356,6 @@ async function processInBackground(
 async function tryDownloadCandidates(
   journal: { id: string; name: string },
   candidates: Array<ImageSearchResult & { _origIdx: number }>,
-  triedIndices: Set<number>,
   logPrefix: string,
   task: { stopRequested: boolean; progress: BatchCoverProgress }
 ): Promise<boolean> {
@@ -503,10 +363,9 @@ async function tryDownloadCandidates(
     if (task.stopRequested) break;
 
     const candidate = candidates[ci];
-    triedIndices.add(candidate._origIdx);
 
     try {
-      console.log(`${logPrefix} downloading candidate[${candidate._origIdx}]: ${candidate.url.substring(0, 100)}...`);
+      console.log(`${logPrefix} downloading candidate[${ci}/${candidates.length}]: ${candidate.url.substring(0, 100)}...`);
       const imgRes = await fetch(candidate.url, {
         headers: {
           "User-Agent":
@@ -521,7 +380,7 @@ async function tryDownloadCandidates(
       });
 
       if (!imgRes.ok) {
-        console.warn(`${logPrefix} candidate[${candidate._origIdx}] HTTP ${imgRes.status}, trying next...`);
+        console.warn(`${logPrefix} candidate[${ci}/${candidates.length}] HTTP ${imgRes.status}, trying next...`);
         continue;
       }
 
@@ -555,13 +414,13 @@ async function tryDownloadCandidates(
 
       // 跳过过大的图片（>5MB）
       if (buffer.length > 5 * 1024 * 1024) {
-        console.warn(`${logPrefix} candidate[${candidate._origIdx}] too large (${(buffer.length / 1024 / 1024).toFixed(1)}MB), trying next...`);
+        console.warn(`${logPrefix} candidate[${ci}/${candidates.length}] too large (${(buffer.length / 1024 / 1024).toFixed(1)}MB), trying next...`);
         continue;
       }
 
       // 跳过过小的图片（<1KB，可能是占位图）
       if (buffer.length < 1024) {
-        console.warn(`${logPrefix} candidate[${candidate._origIdx}] too small (${buffer.length}B), trying next...`);
+        console.warn(`${logPrefix} candidate[${ci}/${candidates.length}] too small (${buffer.length}B), trying next...`);
         continue;
       }
 
@@ -573,11 +432,11 @@ async function tryDownloadCandidates(
       console.log(`${logPrefix} saving cover (${(buffer.length / 1024).toFixed(0)}KB, ${mimeType})`);
       await updateJournalCoverImage(journal.id, buffer, mimeType, fileName);
 
-      console.log(`${logPrefix} SUCCESS (candidate[${candidate._origIdx}])`);
+      console.log(`${logPrefix} SUCCESS (candidate[${ci}/${candidates.length}])`);
       task.progress.successCount++;
       return true;
     } catch (dlErr: any) {
-      console.warn(`${logPrefix} candidate[${candidate._origIdx}] failed: ${dlErr?.message}, trying next...`);
+      console.warn(`${logPrefix} candidate[${ci}/${candidates.length}] failed: ${dlErr?.message}, trying next...`);
       continue;
     }
   }

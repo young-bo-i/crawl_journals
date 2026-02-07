@@ -18,7 +18,7 @@ export const runtime = "nodejs";
  * scraperApiKeys: ScraperAPI 的 API Key 列表，轮询使用
  * serperApiKeys: Serper.dev 的 API Key 列表，轮询使用
  */
-export type ImageSearchMethod = "scraper_proxy" | "google_api" | "scraper_api" | "serper_api";
+export type ImageSearchMethod = "scraper_proxy" | "google_api" | "scraper_api" | "serper_api" | "mirror_scraper";
 
 export type GoogleSearchConfig = {
   method: ImageSearchMethod;
@@ -26,11 +26,12 @@ export type GoogleSearchConfig = {
   proxies: string[];
   scraperApiKeys: string[];
   serperApiKeys: string[];
+  mirrorUrl: string;
 };
 
 const CONFIG_KEY = "google_search_config";
 
-const VALID_METHODS: ImageSearchMethod[] = ["scraper_proxy", "google_api", "scraper_api", "serper_api"];
+const VALID_METHODS: ImageSearchMethod[] = ["scraper_proxy", "google_api", "scraper_api", "serper_api", "mirror_scraper"];
 
 // 兼容旧格式 {apiKey, cx} -> 新格式
 function normalizeConfig(raw: any): GoogleSearchConfig {
@@ -40,6 +41,7 @@ function normalizeConfig(raw: any): GoogleSearchConfig {
     proxies: [],
     scraperApiKeys: [],
     serperApiKeys: [],
+    mirrorUrl: "",
   };
 
   if (!raw) return defaults;
@@ -71,7 +73,9 @@ function normalizeConfig(raw: any): GoogleSearchConfig {
     ? raw.serperApiKeys.filter((k: string) => !!k)
     : [];
 
-  return { method, apiKeys, proxies, scraperApiKeys, serperApiKeys };
+  const mirrorUrl = typeof raw.mirrorUrl === "string" ? raw.mirrorUrl.trim() : "";
+
+  return { method, apiKeys, proxies, scraperApiKeys, serperApiKeys, mirrorUrl };
 }
 
 /**
@@ -136,7 +140,9 @@ export async function POST(req: Request) {
           .filter(Boolean)
       : [];
 
-    const config: GoogleSearchConfig = { method, apiKeys, proxies, scraperApiKeys, serperApiKeys };
+    const mirrorUrl: string = typeof body.mirrorUrl === "string" ? body.mirrorUrl.trim() : "";
+
+    const config: GoogleSearchConfig = { method, apiKeys, proxies, scraperApiKeys, serperApiKeys, mirrorUrl };
     const now = nowLocal();
 
     await execute(

@@ -56,12 +56,13 @@ export default function SettingsPage() {
   const [nlmMessage, setNlmMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // ===== Google 图片搜索配置 =====
-  type ImageSearchMethod = "scraper_proxy" | "google_api" | "scraper_api" | "serper_api";
+  type ImageSearchMethod = "scraper_proxy" | "google_api" | "scraper_api" | "serper_api" | "mirror_scraper";
   const [googleMethod, setGoogleMethod] = useState<ImageSearchMethod>("scraper_proxy");
   const [googleApiKeys, setGoogleApiKeys] = useState<Array<{ apiKey: string; cx: string }>>([]);
   const [googleProxies, setGoogleProxies] = useState<string[]>([]);
   const [scraperApiKeys, setScraperApiKeys] = useState<string[]>([]);
   const [serperApiKeys, setSerperApiKeys] = useState<string[]>([]);
+  const [mirrorUrl, setMirrorUrl] = useState<string>("");
   const [googleLoading, setGoogleLoading] = useState(true);
   const [googleSaving, setGoogleSaving] = useState(false);
   const [googleMessage, setGoogleMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -206,6 +207,7 @@ export default function SettingsPage() {
         setGoogleProxies(json.config.proxies?.length > 0 ? json.config.proxies : []);
         setScraperApiKeys(json.config.scraperApiKeys?.length > 0 ? json.config.scraperApiKeys : []);
         setSerperApiKeys(json.config.serperApiKeys?.length > 0 ? json.config.serperApiKeys : []);
+        setMirrorUrl(json.config.mirrorUrl || "");
       }
     } catch (err) {
       console.error("加载 Google 配置失败:", err);
@@ -227,6 +229,7 @@ export default function SettingsPage() {
           proxies: googleProxies,
           scraperApiKeys,
           serperApiKeys,
+          mirrorUrl,
         }),
       });
       const json = await res.json();
@@ -239,6 +242,7 @@ export default function SettingsPage() {
           setGoogleProxies(json.config.proxies ?? []);
           setScraperApiKeys(json.config.scraperApiKeys ?? []);
           setSerperApiKeys(json.config.serperApiKeys ?? []);
+          setMirrorUrl(json.config.mirrorUrl ?? "");
         }
       } else {
         setGoogleMessage({ type: "error", text: json?.error ?? "保存失败" });
@@ -611,6 +615,12 @@ export default function SettingsPage() {
                   tag: "100次/天/Key",
                 },
                 {
+                  value: "mirror_scraper" as ImageSearchMethod,
+                  label: "自定义镜像站",
+                  desc: "通过 Google 镜像站搜索，无需代理和 API Key",
+                  tag: "免费",
+                },
+                {
                   value: "scraper_api" as ImageSearchMethod,
                   label: "ScraperAPI",
                   desc: "第三方代理服务，自动处理反爬和 IP 轮换",
@@ -695,6 +705,33 @@ export default function SettingsPage() {
                     </Button>
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* ===== 自定义镜像站配置 ===== */}
+          {googleMethod === "mirror_scraper" && (
+            <div className="space-y-4">
+              <div className="rounded-lg bg-muted/50 p-4 space-y-2">
+                <div className="flex items-start gap-2 text-sm">
+                  <Info className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+                  <p className="text-muted-foreground">
+                    通过自建的 Google 镜像站搜索图片。镜像站返回与 Google Images 相同的 HTML 页面，
+                    无需代理、无需 API Key。请确保镜像站可正常访问。
+                  </p>
+                </div>
+              </div>
+              <div className="space-y-3">
+                <label className="text-sm font-medium">镜像站地址</label>
+                <p className="text-xs text-muted-foreground">
+                  填写 Google 图片搜索镜像站的基础 URL，例如 <code className="bg-muted px-1 rounded">http://example.com:8080</code>
+                </p>
+                <Input
+                  value={mirrorUrl}
+                  onChange={(e) => setMirrorUrl(e.target.value)}
+                  placeholder="http://younghome.fun:22978"
+                  className="font-mono h-9 text-sm"
+                />
               </div>
             </div>
           )}

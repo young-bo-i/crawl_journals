@@ -31,6 +31,7 @@ type GoogleSearchConfig = {
   proxies: string[];
   scraperApiKeys: string[];
   serperApiKeys: string[];
+  mirrorUrl: string;
 };
 
 // ============================================================
@@ -52,6 +53,7 @@ async function getConfig(): Promise<GoogleSearchConfig> {
     proxies: [],
     scraperApiKeys: [],
     serperApiKeys: [],
+    mirrorUrl: "",
   };
   try {
     const row = await queryOne<RowDataPacket>(
@@ -61,7 +63,7 @@ async function getConfig(): Promise<GoogleSearchConfig> {
     const raw = JSON.parse(row.value);
 
     const method: ImageSearchMethod =
-      raw.method && ["scraper_proxy", "google_api", "scraper_api", "serper_api"].includes(raw.method)
+      raw.method && ["scraper_proxy", "google_api", "scraper_api", "serper_api", "mirror_scraper"].includes(raw.method)
         ? raw.method
         : raw.apiKeys?.length
           ? "google_api"
@@ -73,6 +75,7 @@ async function getConfig(): Promise<GoogleSearchConfig> {
       proxies: Array.isArray(raw.proxies) ? raw.proxies.filter(Boolean) : [],
       scraperApiKeys: Array.isArray(raw.scraperApiKeys) ? raw.scraperApiKeys.filter(Boolean) : [],
       serperApiKeys: Array.isArray(raw.serperApiKeys) ? raw.serperApiKeys.filter(Boolean) : [],
+      mirrorUrl: typeof raw.mirrorUrl === "string" ? raw.mirrorUrl.trim() : "",
     };
   } catch (err) {
     console.error("[image-search] Failed to read config:", err);
@@ -221,11 +224,11 @@ function parseGoogleImagesHtml(html: string): ImageSearchResult[] {
 // 构造 Google Images 搜索 URL
 // ============================================================
 
-function buildGoogleImagesUrl(query: string): string {
+function buildGoogleImagesUrl(query: string, page = 0): string {
   const url = new URL("https://www.google.com/search");
   url.searchParams.set("q", query);
   url.searchParams.set("tbm", "isch");
-  url.searchParams.set("ijn", "0");
+  url.searchParams.set("ijn", String(page));
   return url.toString();
 }
 
@@ -243,9 +246,10 @@ const BROWSER_HEADERS: Record<string, string> = {
 
 async function searchViaScraperProxy(
   query: string,
-  proxies: string[]
+  proxies: string[],
+  page = 0
 ): Promise<ImageSearchResult[]> {
-  const googleUrl = buildGoogleImagesUrl(query);
+  const googleUrl = buildGoogleImagesUrl(query, page);
 
   let proxyUrl: string | undefined;
   if (proxies.length > 0) {
@@ -281,7 +285,8 @@ async function searchViaScraperProxy(
 
 async function searchViaGoogleApi(
   query: string,
-  apiKeys: Array<{ apiKey: string; cx: string }>
+  apiKeys: Array<{ apiKey: string; cx: string }>,
+  page = 0
 ): Promise<ImageSearchResult[]> {
   const keyPair = apiKeys[apiKeyIndex % apiKeys.length];
   apiKeyIndex++;
@@ -291,7 +296,8 @@ async function searchViaGoogleApi(
   searchUrl.searchParams.set("cx", keyPair.cx);
   searchUrl.searchParams.set("q", query);
   searchUrl.searchParams.set("searchType", "image");
-  searchUrl.searchParams.set("num", "12");
+  searchUrl.searchParams.set("num", "10");
+  searchUrl.searchParams.set("start", String(page * 10 + 1));
   searchUrl.searchParams.set("safe", "active");
   searchUrl.searchParams.set("imgType", "photo");
 
@@ -326,12 +332,13 @@ async function searchViaGoogleApi(
 
 async function searchViaScraperApi(
   query: string,
-  scraperApiKeys: string[]
+  scraperApiKeys: string[],
+  page = 0
 ): Promise<ImageSearchResult[]> {
   const key = scraperApiKeys[scraperKeyIndex % scraperApiKeys.length];
   scraperKeyIndex++;
 
-  const googleUrl = buildGoogleImagesUrl(query);
+  const googleUrl = buildGoogleImagesUrl(query, page);
 
   // ScraperAPI endpoint: 传入目标 URL，返回原始 HTML
   // 必须启用 render=true (JS 渲染)，否则 Google Images 不会加载图片数据
@@ -382,7 +389,8 @@ async function searchViaScraperApi(
 
 async function searchViaSerper(
   query: string,
-  serperApiKeys: string[]
+  serperApiKeys: string[],
+  page = 0
 ): Promise<ImageSearchResult[]> {
   const maxRetries = Math.min(3, serperApiKeys.length); // 最多重试 3 次，且不超过 Key 数量
   let lastError: Error | null = null;
@@ -406,6 +414,7 @@ async function searchViaSerper(
         body: JSON.stringify({
           q: query,
           num: 10,
+          page: page + 1, // Serper 页码从 1 开始
         }),
         signal: AbortSignal.timeout(15000),
       });
@@ -462,11 +471,56 @@ async function searchViaSerper(
 }
 
 // ============================================================
+// 模式五：自定义 Google 镜像站（mirror_scraper）
+// 通过 Google 镜像站搜索图片，返回与 Google Images 相同的 HTML
+// 无需代理、无需 API Key，依赖镜像站可用性
+// ============================================================
+
+async function searchViaMirror(
+  query: string,
+  mirrorUrl: string,
+  page = 0
+): Promise<ImageSearchResult[]> {
+  // 构造镜像站搜索 URL（与 Google Images 参数一致）
+  const base = mirrorUrl.replace(/\/+$/, "");
+  const searchUrl = new URL(`${base}/search`);
+  searchUrl.searchParams.set("q", query);
+  searchUrl.searchParams.set("tbm", "isch");
+  searchUrl.searchParams.set("ijn", String(page));
+
+  console.log(`[image-search] mirror_scraper: ${searchUrl.toString().substring(0, 120)}...`);
+
+  const res = await fetch(searchUrl.toString(), {
+    headers: BROWSER_HEADERS,
+    redirect: "follow",
+    signal: AbortSignal.timeout(20000),
+  });
+
+  if (!res.ok) {
+    throw new Error(`MIRROR_FAILED:${res.status}`);
+  }
+
+  const html = await res.text();
+
+  // 检测反爬（镜像站也可能触发）
+  if (
+    html.includes("detected unusual traffic") ||
+    html.includes("/sorry/") ||
+    html.includes("captcha")
+  ) {
+    throw new Error("RATE_LIMITED");
+  }
+
+  return parseGoogleImagesHtml(html);
+}
+
+// ============================================================
 // 公共搜索接口（供后台批量任务直接调用，跳过 HTTP 层）
 // ============================================================
 
 export async function performImageSearch(
-  query: string
+  query: string,
+  page = 0
 ): Promise<ImageSearchResult[]> {
   const config = await getConfig();
 
@@ -474,17 +528,20 @@ export async function performImageSearch(
   if (method === "google_api" && config.apiKeys.length === 0) method = "scraper_proxy";
   if (method === "scraper_api" && config.scraperApiKeys.length === 0) method = "scraper_proxy";
   if (method === "serper_api" && config.serperApiKeys.length === 0) method = "scraper_proxy";
+  if (method === "mirror_scraper" && !config.mirrorUrl) method = "scraper_proxy";
 
   switch (method) {
     case "google_api":
-      return searchViaGoogleApi(query, config.apiKeys);
+      return searchViaGoogleApi(query, config.apiKeys, page);
     case "scraper_api":
-      return searchViaScraperApi(query, config.scraperApiKeys);
+      return searchViaScraperApi(query, config.scraperApiKeys, page);
     case "serper_api":
-      return searchViaSerper(query, config.serperApiKeys);
+      return searchViaSerper(query, config.serperApiKeys, page);
+    case "mirror_scraper":
+      return searchViaMirror(query, config.mirrorUrl, page);
     case "scraper_proxy":
     default:
-      return searchViaScraperProxy(query, config.proxies);
+      return searchViaScraperProxy(query, config.proxies, page);
   }
 }
 
@@ -516,6 +573,9 @@ export async function GET(req: Request) {
   if (method === "serper_api" && config.serperApiKeys.length === 0) {
     method = "scraper_proxy"; // 没有 Serper Key，降级到爬虫
   }
+  if (method === "mirror_scraper" && !config.mirrorUrl) {
+    method = "scraper_proxy"; // 没有镜像站 URL，降级到爬虫
+  }
 
   try {
     let items: ImageSearchResult[];
@@ -540,6 +600,13 @@ export async function GET(req: Request) {
           `[image-search] Using Serper.dev API (${config.serperApiKeys.length} key(s))`
         );
         items = await searchViaSerper(q, config.serperApiKeys);
+        break;
+
+      case "mirror_scraper":
+        console.log(
+          `[image-search] Using mirror site: ${config.mirrorUrl}`
+        );
+        items = await searchViaMirror(q, config.mirrorUrl);
         break;
 
       case "scraper_proxy":
@@ -576,7 +643,8 @@ export async function GET(req: Request) {
     if (
       message.startsWith("SCRAPE_FAILED") ||
       message.startsWith("SCRAPER_API_FAILED") ||
-      message.startsWith("SERPER_API_FAILED")
+      message.startsWith("SERPER_API_FAILED") ||
+      message.startsWith("MIRROR_FAILED")
     ) {
       return Response.json(
         {
