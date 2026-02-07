@@ -27,6 +27,8 @@ export type GoogleSearchConfig = {
   scraperApiKeys: string[];
   serperApiKeys: string[];
   mirrorUrl: string;
+  /** 图片下载使用的 SOCKS5 代理地址，如 socks5://127.0.0.1:1080，为空则直连 */
+  downloadProxy: string;
 };
 
 const CONFIG_KEY = "google_search_config";
@@ -42,6 +44,7 @@ function normalizeConfig(raw: any): GoogleSearchConfig {
     scraperApiKeys: [],
     serperApiKeys: [],
     mirrorUrl: "",
+    downloadProxy: "",
   };
 
   if (!raw) return defaults;
@@ -74,8 +77,9 @@ function normalizeConfig(raw: any): GoogleSearchConfig {
     : [];
 
   const mirrorUrl = typeof raw.mirrorUrl === "string" ? raw.mirrorUrl.trim() : "";
+  const downloadProxy = typeof raw.downloadProxy === "string" ? raw.downloadProxy.trim() : "";
 
-  return { method, apiKeys, proxies, scraperApiKeys, serperApiKeys, mirrorUrl };
+  return { method, apiKeys, proxies, scraperApiKeys, serperApiKeys, mirrorUrl, downloadProxy };
 }
 
 /**
@@ -141,8 +145,9 @@ export async function POST(req: Request) {
       : [];
 
     const mirrorUrl: string = typeof body.mirrorUrl === "string" ? body.mirrorUrl.trim() : "";
+    const downloadProxy: string = typeof body.downloadProxy === "string" ? body.downloadProxy.trim() : "";
 
-    const config: GoogleSearchConfig = { method, apiKeys, proxies, scraperApiKeys, serperApiKeys, mirrorUrl };
+    const config: GoogleSearchConfig = { method, apiKeys, proxies, scraperApiKeys, serperApiKeys, mirrorUrl, downloadProxy };
     const now = nowLocal();
 
     await execute(

@@ -32,6 +32,7 @@ type GoogleSearchConfig = {
   scraperApiKeys: string[];
   serperApiKeys: string[];
   mirrorUrl: string;
+  downloadProxy: string;
 };
 
 // ============================================================
@@ -56,6 +57,7 @@ async function getConfig(): Promise<GoogleSearchConfig> {
     scraperApiKeys: [],
     serperApiKeys: [],
     mirrorUrl: "",
+    downloadProxy: "",
   };
   try {
     const row = await queryOne<RowDataPacket>(
@@ -78,11 +80,18 @@ async function getConfig(): Promise<GoogleSearchConfig> {
       scraperApiKeys: Array.isArray(raw.scraperApiKeys) ? raw.scraperApiKeys.filter(Boolean) : [],
       serperApiKeys: Array.isArray(raw.serperApiKeys) ? raw.serperApiKeys.filter(Boolean) : [],
       mirrorUrl: typeof raw.mirrorUrl === "string" ? raw.mirrorUrl.trim() : "",
+      downloadProxy: typeof raw.downloadProxy === "string" ? raw.downloadProxy.trim() : "",
     };
   } catch (err) {
     console.error("[image-search] Failed to read config:", err);
     return defaults;
   }
+}
+
+/** 获取图片下载代理配置（供 image-proxy、batch-cover 等模块使用） */
+export async function getDownloadProxy(): Promise<string> {
+  const config = await getConfig();
+  return config.downloadProxy;
 }
 
 // ============================================================

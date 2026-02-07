@@ -63,6 +63,7 @@ export default function SettingsPage() {
   const [scraperApiKeys, setScraperApiKeys] = useState<string[]>([]);
   const [serperApiKeys, setSerperApiKeys] = useState<string[]>([]);
   const [mirrorUrl, setMirrorUrl] = useState<string>("");
+  const [downloadProxy, setDownloadProxy] = useState<string>("");
   const [googleLoading, setGoogleLoading] = useState(true);
   const [googleSaving, setGoogleSaving] = useState(false);
   const [googleMessage, setGoogleMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -208,6 +209,7 @@ export default function SettingsPage() {
         setScraperApiKeys(json.config.scraperApiKeys?.length > 0 ? json.config.scraperApiKeys : []);
         setSerperApiKeys(json.config.serperApiKeys?.length > 0 ? json.config.serperApiKeys : []);
         setMirrorUrl(json.config.mirrorUrl || "");
+        setDownloadProxy(json.config.downloadProxy || "");
       }
     } catch (err) {
       console.error("加载 Google 配置失败:", err);
@@ -230,6 +232,7 @@ export default function SettingsPage() {
           scraperApiKeys,
           serperApiKeys,
           mirrorUrl,
+          downloadProxy,
         }),
       });
       const json = await res.json();
@@ -243,6 +246,7 @@ export default function SettingsPage() {
           setScraperApiKeys(json.config.scraperApiKeys ?? []);
           setSerperApiKeys(json.config.serperApiKeys ?? []);
           setMirrorUrl(json.config.mirrorUrl ?? "");
+          setDownloadProxy(json.config.downloadProxy ?? "");
         }
       } else {
         setGoogleMessage({ type: "error", text: json?.error ?? "保存失败" });
@@ -961,6 +965,24 @@ export default function SettingsPage() {
               </div>
             </div>
           )}
+
+          <Separator />
+
+          {/* ===== 图片下载 SOCKS5 代理 ===== */}
+          <div className="space-y-3">
+            <div>
+              <h4 className="font-medium text-sm">图片下载代理（可选）</h4>
+              <p className="text-xs text-muted-foreground mt-1">
+                配置 SOCKS5 代理用于下载图片（预览和批量抓取封面时使用）。留空则直连下载。
+              </p>
+            </div>
+            <Input
+              value={downloadProxy}
+              onChange={(e) => setDownloadProxy(e.target.value)}
+              placeholder="socks5://127.0.0.1:1080"
+              className="font-mono h-9 text-sm"
+            />
+          </div>
 
           <Separator />
 

@@ -8,6 +8,8 @@
  * 注意：直接调用数据库和搜索函数，不走内部 HTTP，避免请求卡死。
  */
 
+import http from "node:http";
+import https from "node:https";
 import {
   queryJournals,
   hasJournalCoverImage,
@@ -18,8 +20,10 @@ import {
 } from "@/server/db/repo";
 import {
   performImageSearch,
+  getDownloadProxy,
   type ImageSearchResult,
 } from "@/app/api/image-search/route";
+import { SocksProxyAgent } from "socks-proxy-agent";
 import { broadcastMessage } from "@/server/ws/manager";
 
 // ============================================================
@@ -360,6 +364,81 @@ async function processInBackground(
 }
 
 // ============================================================
+// 通用：通过 SOCKS5 代理或直连下载图片
+// ============================================================
+
+const DOWNLOAD_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  Referer: "https://www.google.com/",
+};
+
+async function downloadImage(
+  imageUrl: string,
+  proxyAddr: string
+): Promise<{ buffer: Buffer; mimeType: string; status: number }> {
+  if (proxyAddr) {
+    // SOCKS5 代理下载
+    const agent = new SocksProxyAgent(proxyAddr);
+    return new Promise((resolve, reject) => {
+      const isHttps = imageUrl.startsWith("https");
+      const lib = isHttps ? https : http;
+      const urlObj = new URL(imageUrl);
+      const nodeReq = lib.request(
+        {
+          hostname: urlObj.hostname,
+          port: urlObj.port || (isHttps ? 443 : 80),
+          path: urlObj.pathname + urlObj.search,
+          method: "GET",
+          agent,
+          headers: DOWNLOAD_HEADERS,
+          timeout: 20000,
+        },
+        (nodeRes) => {
+          // 处理 3xx 重定向
+          if (nodeRes.statusCode && nodeRes.statusCode >= 300 && nodeRes.statusCode < 400 && nodeRes.headers.location) {
+            downloadImage(nodeRes.headers.location, proxyAddr).then(resolve).catch(reject);
+            return;
+          }
+          const chunks: Buffer[] = [];
+          nodeRes.on("data", (chunk: Buffer) => chunks.push(chunk));
+          nodeRes.on("end", () => {
+            resolve({
+              buffer: Buffer.concat(chunks),
+              mimeType: nodeRes.headers["content-type"]?.split(";")[0]?.trim() || "image/jpeg",
+              status: nodeRes.statusCode || 502,
+            });
+          });
+          nodeRes.on("error", reject);
+        }
+      );
+      nodeReq.on("error", reject);
+      nodeReq.on("timeout", () => {
+        nodeReq.destroy();
+        reject(new Error("Download timeout"));
+      });
+      nodeReq.end();
+    });
+  } else {
+    // 直连下载
+    const res = await fetch(imageUrl, {
+      headers: DOWNLOAD_HEADERS,
+      redirect: "follow",
+      signal: AbortSignal.timeout(20000),
+    });
+    const contentType = res.headers.get("content-type")?.split(";")[0]?.trim() ?? "image/jpeg";
+    const arrayBuffer = await res.arrayBuffer();
+    return {
+      buffer: Buffer.from(arrayBuffer),
+      mimeType: contentType,
+      status: res.status,
+    };
+  }
+}
+
+// ============================================================
 // 通用：尝试从候选列表中下载图片并保存
 // ============================================================
 
@@ -369,35 +448,28 @@ async function tryDownloadCandidates(
   logPrefix: string,
   task: { stopRequested: boolean; progress: BatchCoverProgress }
 ): Promise<boolean> {
+  // 获取代理配置（每批次开始时读一次）
+  let proxyAddr = "";
+  try {
+    proxyAddr = await getDownloadProxy();
+  } catch { /* 读不到配置就直连 */ }
+
   for (let ci = 0; ci < candidates.length; ci++) {
     if (task.stopRequested) break;
 
     const candidate = candidates[ci];
 
     try {
-      console.log(`${logPrefix} downloading candidate[${ci}/${candidates.length}]: ${candidate.url.substring(0, 100)}...`);
-      const imgRes = await fetch(candidate.url, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          Accept:
-            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-          "Accept-Language": "en-US,en;q=0.9",
-          Referer: "https://www.google.com/",
-        },
-        redirect: "follow",
-        signal: AbortSignal.timeout(20000),
-      });
+      console.log(`${logPrefix} downloading candidate[${ci}/${candidates.length}]${proxyAddr ? " (via proxy)" : ""}: ${candidate.url.substring(0, 100)}...`);
+      const imgResult = await downloadImage(candidate.url, proxyAddr);
 
-      if (!imgRes.ok) {
-        console.warn(`${logPrefix} candidate[${ci}/${candidates.length}] HTTP ${imgRes.status}, trying next...`);
+      if (imgResult.status < 200 || imgResult.status >= 400) {
+        console.warn(`${logPrefix} candidate[${ci}/${candidates.length}] HTTP ${imgResult.status}, trying next...`);
         continue;
       }
 
       // 检测 MIME
-      let mimeType =
-        imgRes.headers.get("content-type")?.split(";")[0]?.trim() ??
-        "image/jpeg";
+      let mimeType = imgResult.mimeType;
       const ALLOWED = [
         "image/jpeg",
         "image/png",
@@ -420,7 +492,7 @@ async function tryDownloadCandidates(
         mimeType = (ext && extMap[ext]) || "image/jpeg";
       }
 
-      const buffer = Buffer.from(await imgRes.arrayBuffer());
+      const buffer = imgResult.buffer;
 
       // 跳过过大的图片（>5MB）
       if (buffer.length > 5 * 1024 * 1024) {
