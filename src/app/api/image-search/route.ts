@@ -501,7 +501,7 @@ async function searchViaMirror(
     throw new Error(`MIRROR_FAILED:${res.status}`);
   }
 
-  const html = await res.text();
+  let html = await res.text();
 
   // 检测反爬（镜像站也可能触发）
   if (
@@ -511,6 +511,10 @@ async function searchViaMirror(
   ) {
     throw new Error("RATE_LIMITED");
   }
+
+  // zmirror 会将所有 URL 重写为 http://host/extdomains/domain.com/path 格式
+  // 需要还原为原始 URL: https://domain.com/path，才能让解析正则正常工作
+  html = html.replace(/https?:\/\/[^\/\s"']+\/extdomains\//g, "https://");
 
   return parseGoogleImagesHtml(html);
 }
