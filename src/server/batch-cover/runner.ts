@@ -82,7 +82,8 @@ export function stopBatchCover(): boolean {
 
 /** 启动批量封面抓取 */
 export async function startBatchCover(
-  filterParams: Record<string, string>
+  filterParams: Record<string, string>,
+  limit?: number
 ): Promise<string> {
   const task = getTask();
   if (task?.progress.status === "running") {
@@ -110,10 +111,10 @@ export async function startBatchCover(
   broadcastProgress(true);
 
   console.log(`[batch-cover] ===== Task ${taskId} starting =====`);
-  console.log(`[batch-cover] Filter params received:`, JSON.stringify(filterParams));
+  console.log(`[batch-cover] Filter params received:`, JSON.stringify(filterParams), `limit: ${limit ?? "unlimited"}`);
 
   // 启动后台处理（不阻塞响应）
-  processInBackground(taskId, filterParams).catch((err) => {
+  processInBackground(taskId, filterParams, limit).catch((err) => {
     console.error("[batch-cover] ===== UNCAUGHT ERROR =====", err);
     const t = getTask();
     if (t?.taskId === taskId) {
@@ -161,7 +162,8 @@ function broadcastProgress(force = false) {
 
 async function processInBackground(
   taskId: string,
-  filterParams: Record<string, string>
+  filterParams: Record<string, string>,
+  limit?: number
 ) {
   const task = getTask();
   if (!task || task.taskId !== taskId) {
@@ -217,6 +219,8 @@ async function processInBackground(
     broadcastProgress(page === 1); // 第一页强制推送
 
     if (rows.length < PAGE_SIZE || allJournals.length >= total) break;
+    // 如果设置了数量限制，收集够了就停止
+    if (limit && allJournals.length >= limit) break;
     page++;
   }
 
@@ -225,6 +229,12 @@ async function processInBackground(
     broadcastProgress(true);
     console.log("[batch-cover] Task stopped during collection phase");
     return;
+  }
+
+  // 如果设置了数量限制，截断列表
+  if (limit && limit > 0 && allJournals.length > limit) {
+    allJournals.length = limit;
+    console.log(`[batch-cover] Limited to ${limit} journals (from ${task.progress.total} total)`);
   }
 
   task.progress.total = allJournals.length;
@@ -239,8 +249,8 @@ async function processInBackground(
     return;
   }
 
-  // ---- 2. 并发处理（并发 5） ----
-  const CONCURRENCY = 5;
+  // ---- 2. 并发处理（并发 2，避免镜像站过载） ----
+  const CONCURRENCY = 2;
   const MAX_PAGES = 5; // 每个期刊最多搜索 5 页
 
   let processedSoFar = 0;

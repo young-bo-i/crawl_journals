@@ -231,6 +231,7 @@ export default function JournalsTable() {
     error?: string;
   } | null>(null);
   const [asyncBatchStarting, setAsyncBatchStarting] = useState(false);
+  const [asyncBatchLimit, setAsyncBatchLimit] = useState<string>("");
 
   // 视图模式
   const [viewMode, setViewMode] = useState<"table" | "grid">("table");
@@ -379,7 +380,7 @@ export default function JournalsTable() {
 
   // 批量抓取封面（并发 5）
   const handleBatchCover = useCallback(async () => {
-    const CONCURRENCY = 5;
+    const CONCURRENCY = 2;
     const noCoverRows = rows.filter((r) => !r.cover_image_name);
     if (noCoverRows.length === 0) return;
 
@@ -555,10 +556,11 @@ export default function JournalsTable() {
       if (appliedFilters.minFirstYear) filterMap.minFirstYear = appliedFilters.minFirstYear;
       if (appliedFilters.maxFirstYear) filterMap.maxFirstYear = appliedFilters.maxFirstYear;
 
+      const limit = asyncBatchLimit ? Number(asyncBatchLimit) : undefined;
       const res = await fetch("/api/batch-cover", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filters: filterMap }),
+        body: JSON.stringify({ filters: filterMap, limit: limit && limit > 0 ? limit : undefined }),
       });
       const data = await res.json();
 
@@ -570,7 +572,7 @@ export default function JournalsTable() {
     } finally {
       setAsyncBatchStarting(false);
     }
-  }, [appliedFilters]);
+  }, [appliedFilters, asyncBatchLimit]);
 
   // 停止后台异步批量抓取
   const handleStopAsyncBatch = useCallback(async () => {
@@ -725,20 +727,30 @@ export default function JournalsTable() {
 
               {/* 后台全量抓取封面按钮 */}
               {asyncBatchProgress?.status !== "running" ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleAsyncBatchCover}
-                  disabled={loading || asyncBatchStarting}
-                  className="gap-1"
-                >
-                  {asyncBatchStarting ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <CloudDownload className="h-3.5 w-3.5" />
-                  )}
-                  后台全量抓取
-                </Button>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="数量(空=全部)"
+                    value={asyncBatchLimit}
+                    onChange={(e) => setAsyncBatchLimit(e.target.value)}
+                    className="h-8 w-28 rounded-md border border-input bg-background px-2 text-xs"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleAsyncBatchCover}
+                    disabled={loading || asyncBatchStarting}
+                    className="gap-1"
+                  >
+                    {asyncBatchStarting ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <CloudDownload className="h-3.5 w-3.5" />
+                    )}
+                    后台抓取
+                  </Button>
+                </div>
               ) : (
                 <Button
                   variant="destructive"

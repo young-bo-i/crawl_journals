@@ -502,7 +502,7 @@ async function searchViaMirror(
     res = await fetch(currentUrl, {
       headers: BROWSER_HEADERS,
       redirect: "manual", // 手动处理重定向
-      signal: AbortSignal.timeout(20000),
+      signal: AbortSignal.timeout(60000), // 镜像站响应较慢，给 60 秒
     });
 
     if (res.status >= 300 && res.status < 400) {

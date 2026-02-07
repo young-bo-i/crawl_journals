@@ -26,10 +26,13 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const filters: Record<string, string> = body.filters ?? {};
+    const limit: number | undefined = body.limit && Number(body.limit) > 0
+      ? Number(body.limit)
+      : undefined;
 
-    console.log("[batch-cover] POST /api/batch-cover, filters:", JSON.stringify(filters));
+    console.log("[batch-cover] POST /api/batch-cover, filters:", JSON.stringify(filters), "limit:", limit ?? "unlimited");
 
-    const taskId = await startBatchCover(filters);
+    const taskId = await startBatchCover(filters, limit);
 
     return Response.json({ ok: true, taskId });
   } catch (err: any) {
