@@ -491,14 +491,33 @@ async function searchViaMirror(
 
   console.log(`[image-search] mirror_scraper: ${searchUrl.toString().substring(0, 120)}...`);
 
-  const res = await fetch(searchUrl.toString(), {
-    headers: BROWSER_HEADERS,
-    redirect: "follow",
-    signal: AbortSignal.timeout(20000),
-  });
+  // zmirror 可能返回 302 重定向到内部地址（如 127.0.0.1:8090），
+  // Docker 容器内无法访问宿主机的 127.0.0.1，因此需要手动处理重定向
+  const mirrorOrigin = parsed.origin;
+  let currentUrl = searchUrl.toString();
+  let res: Response | null = null;
+  const MAX_REDIRECTS = 5;
 
-  if (!res.ok) {
-    throw new Error(`MIRROR_FAILED:${res.status}`);
+  for (let i = 0; i <= MAX_REDIRECTS; i++) {
+    res = await fetch(currentUrl, {
+      headers: BROWSER_HEADERS,
+      redirect: "manual", // 手动处理重定向
+      signal: AbortSignal.timeout(20000),
+    });
+
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get("location");
+      if (!location) break;
+      // 将重定向目标中的内部地址替换为镜像站外部地址
+      currentUrl = location.replace(/https?:\/\/[^\/]+/, mirrorOrigin);
+      console.log(`[image-search] mirror redirect ${res.status} → ${currentUrl.substring(0, 120)}...`);
+      continue;
+    }
+    break;
+  }
+
+  if (!res || !res.ok) {
+    throw new Error(`MIRROR_FAILED:${res?.status ?? "no_response"}`);
   }
 
   let html = await res.text();
@@ -514,7 +533,6 @@ async function searchViaMirror(
 
   // zmirror 会将所有 URL 重写为 http://内部地址/extdomains/domain.com/path 格式
   // 将内部地址替换为配置的外部镜像站地址，使图片可通过镜像代理下载
-  const mirrorOrigin = new URL(mirrorUrl).origin; // e.g. http://younghome.fun:22978
   html = html.replace(
     /https?:\/\/[^\/\s"']+(?=\/extdomains\/)/g,
     mirrorOrigin
