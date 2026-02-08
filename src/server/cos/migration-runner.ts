@@ -7,7 +7,7 @@
  * 支持：启动 / 停止 / 查询进度，后台异步执行，支持断点续传。
  */
 
-import { execute, queryOne } from "@/server/db/mysql";
+import { execute, query, queryOne } from "@/server/db/mysql";
 import { isCosConfigured, uploadCover } from "@/server/cos/client";
 import type { RowDataPacket } from "mysql2";
 
@@ -115,11 +115,11 @@ async function runMigration(task: CosMigrationTask) {
     // 分批处理
     while (!task.stopRequested) {
       // 每批取一组待迁移的 ID
-      const [rows] = await execute(
+      const rows = await query<RowDataPacket[]>(
         `SELECT journal_id FROM journal_covers WHERE cos_key IS NULL AND image IS NOT NULL LIMIT ?`,
         [BATCH_SIZE]
       );
-      const ids: string[] = (rows as RowDataPacket[]).map((r) => r.journal_id);
+      const ids: string[] = rows.map((r) => r.journal_id);
 
       if (ids.length === 0) break; // 全部迁移完成
 
