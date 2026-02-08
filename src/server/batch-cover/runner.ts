@@ -439,8 +439,151 @@ async function downloadImage(
 }
 
 // ============================================================
+// 通用：通过文件魔数 (magic bytes) 检测真实图片类型
+// ============================================================
+
+/** 检查 buffer 前几个字节判断是否为图片，返回 MIME 或 null */
+function detectImageMime(buffer: Buffer): string | null {
+  if (buffer.length < 4) return null;
+  // JPEG: FF D8 FF
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff)
+    return "image/jpeg";
+  // PNG: 89 50 4E 47
+  if (
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47
+  )
+    return "image/png";
+  // GIF: 47 49 46 38
+  if (
+    buffer[0] === 0x47 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x38
+  )
+    return "image/gif";
+  // WebP: RIFF....WEBP
+  if (
+    buffer.length >= 12 &&
+    buffer[0] === 0x52 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x46 &&
+    buffer[8] === 0x57 &&
+    buffer[9] === 0x45 &&
+    buffer[10] === 0x42 &&
+    buffer[11] === 0x50
+  )
+    return "image/webp";
+  return null;
+}
+
+/** 明确的非图片 Content-Type，遇到时直接拒绝 */
+const REJECT_CONTENT_TYPES = [
+  "text/html",
+  "text/plain",
+  "text/xml",
+  "application/json",
+  "application/xml",
+  "application/xhtml+xml",
+  "application/javascript",
+  "text/css",
+];
+
+// ============================================================
 // 通用：尝试从候选列表中下载图片并保存
 // ============================================================
+
+/** thumbnail 回退时要求的最小像素（宽/高均需达到） */
+const THUMBNAIL_MIN_DIMENSION = 200;
+
+/**
+ * 尝试下载并验证单个 URL，返回验证通过的 { buffer, mimeType } 或 null。
+ * 验证逻辑：HTTP 状态码 + 严格拒绝非图片 Content-Type + 魔数校验 + 大小校验 + 可选分辨率校验。
+ *
+ * @param minWidth  最小宽度（像素），0 表示不检查
+ * @param minHeight 最小高度（像素），0 表示不检查
+ */
+async function tryDownloadSingleUrl(
+  url: string,
+  proxyAddr: string,
+  label: string,
+  logPrefix: string,
+  minWidth = 0,
+  minHeight = 0
+): Promise<{ buffer: Buffer; mimeType: string } | null> {
+  const imgResult = await downloadImage(url, proxyAddr);
+
+  // 1. HTTP 状态码
+  if (imgResult.status < 200 || imgResult.status >= 400) {
+    console.warn(`${logPrefix} ${label} HTTP ${imgResult.status}, skip`);
+    return null;
+  }
+
+  const ALLOWED_MIME = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+  const serverMime = imgResult.mimeType;
+  let mimeType: string;
+
+  if (ALLOWED_MIME.includes(serverMime)) {
+    // 2a. Content-Type 已经是合法图片类型
+    mimeType = serverMime;
+  } else if (REJECT_CONTENT_TYPES.some((t) => serverMime.startsWith(t))) {
+    // 2b. Content-Type 是明确的非图片类型（如 text/html）→ 直接拒绝
+    console.warn(`${logPrefix} ${label} rejected: Content-Type=${serverMime} (non-image)`);
+    return null;
+  } else {
+    // 2c. 未知 Content-Type → 用魔数检测
+    const detected = detectImageMime(imgResult.buffer);
+    if (detected) {
+      mimeType = detected;
+    } else {
+      console.warn(`${logPrefix} ${label} rejected: Content-Type=${serverMime}, magic bytes unrecognized`);
+      return null;
+    }
+  }
+
+  // 3. 再用魔数做二次校验（即使 Content-Type 合法，内容也可能不对）
+  const magicMime = detectImageMime(imgResult.buffer);
+  if (!magicMime) {
+    console.warn(`${logPrefix} ${label} rejected: Content-Type=${serverMime} but magic bytes invalid`);
+    return null;
+  }
+
+  const buffer = imgResult.buffer;
+
+  // 4. 文件大小校验
+  if (buffer.length > 5 * 1024 * 1024) {
+    console.warn(`${logPrefix} ${label} too large (${(buffer.length / 1024 / 1024).toFixed(1)}MB), skip`);
+    return null;
+  }
+  if (buffer.length < 1024) {
+    console.warn(`${logPrefix} ${label} too small (${buffer.length}B), skip`);
+    return null;
+  }
+
+  // 5. 分辨率校验（用于 thumbnail 等可能低分辨率的来源）
+  if (minWidth > 0 || minHeight > 0) {
+    try {
+      const sharp = (await import("sharp")).default;
+      const meta = await sharp(buffer).metadata();
+      const w = meta.width ?? 0;
+      const h = meta.height ?? 0;
+      if (w < minWidth || h < minHeight) {
+        console.warn(
+          `${logPrefix} ${label} resolution too low (${w}x${h}, need >=${minWidth}x${minHeight}), skip`
+        );
+        return null;
+      }
+    } catch (metaErr: any) {
+      console.warn(`${logPrefix} ${label} failed to read image dimensions: ${metaErr?.message}, skip`);
+      return null;
+    }
+  }
+
+  return { buffer, mimeType };
+}
 
 async function tryDownloadCandidates(
   journal: { id: string; name: string },
@@ -458,67 +601,57 @@ async function tryDownloadCandidates(
     if (task.stopRequested) break;
 
     const candidate = candidates[ci];
+    const tag = `candidate[${ci}/${candidates.length}]`;
+
+    // --- 尝试原始 URL ---
+    let result: { buffer: Buffer; mimeType: string } | null = null;
+    let usedUrl = candidate.url;
 
     try {
-      console.log(`${logPrefix} downloading candidate[${ci}/${candidates.length}]${proxyAddr ? " (via proxy)" : ""}: ${candidate.url.substring(0, 100)}...`);
-      const imgResult = await downloadImage(candidate.url, proxyAddr);
+      console.log(`${logPrefix} downloading ${tag}${proxyAddr ? " (via proxy)" : ""}: ${candidate.url.substring(0, 100)}...`);
+      result = await tryDownloadSingleUrl(candidate.url, proxyAddr, tag, logPrefix);
+    } catch (dlErr: any) {
+      console.warn(`${logPrefix} ${tag} original URL failed: ${dlErr?.message}`);
+    }
 
-      if (imgResult.status < 200 || imgResult.status >= 400) {
-        console.warn(`${logPrefix} candidate[${ci}/${candidates.length}] HTTP ${imgResult.status}, trying next...`);
-        continue;
+    // --- 原始 URL 失败，尝试 thumbnail 回退（带最小分辨率检查） ---
+    if (
+      !result &&
+      candidate.thumbnail &&
+      candidate.thumbnail !== candidate.url
+    ) {
+      try {
+        console.log(`${logPrefix} ${tag} falling back to thumbnail: ${candidate.thumbnail.substring(0, 100)}...`);
+        result = await tryDownloadSingleUrl(
+          candidate.thumbnail,
+          proxyAddr,
+          `${tag}(thumbnail)`,
+          logPrefix,
+          THUMBNAIL_MIN_DIMENSION,
+          THUMBNAIL_MIN_DIMENSION
+        );
+        if (result) usedUrl = candidate.thumbnail;
+      } catch (dlErr: any) {
+        console.warn(`${logPrefix} ${tag} thumbnail also failed: ${dlErr?.message}`);
       }
+    }
 
-      // 检测 MIME
-      let mimeType = imgResult.mimeType;
-      const ALLOWED = [
-        "image/jpeg",
-        "image/png",
-        "image/gif",
-        "image/webp",
-      ];
-      if (!ALLOWED.includes(mimeType)) {
-        const ext = candidate.url
-          .split("?")[0]
-          .split(".")
-          .pop()
-          ?.toLowerCase();
-        const extMap: Record<string, string> = {
-          jpg: "image/jpeg",
-          jpeg: "image/jpeg",
-          png: "image/png",
-          gif: "image/gif",
-          webp: "image/webp",
-        };
-        mimeType = (ext && extMap[ext]) || "image/jpeg";
-      }
+    if (!result) continue;
 
-      const buffer = imgResult.buffer;
-
-      // 跳过过大的图片（>5MB）
-      if (buffer.length > 5 * 1024 * 1024) {
-        console.warn(`${logPrefix} candidate[${ci}/${candidates.length}] too large (${(buffer.length / 1024 / 1024).toFixed(1)}MB), trying next...`);
-        continue;
-      }
-
-      // 跳过过小的图片（<1KB，可能是占位图）
-      if (buffer.length < 1024) {
-        console.warn(`${logPrefix} candidate[${ci}/${candidates.length}] too small (${buffer.length}B), trying next...`);
-        continue;
-      }
-
+    // --- 下载成功，保存 ---
+    try {
       // 从 URL 提取文件名
-      const urlPath = new URL(candidate.url).pathname;
+      const urlPath = new URL(usedUrl).pathname;
       const fileName = urlPath.split("/").pop() || "cover.jpg";
 
-      // 写入数据库
-      console.log(`${logPrefix} saving cover (${(buffer.length / 1024).toFixed(0)}KB, ${mimeType})`);
-      await updateJournalCoverImage(journal.id, buffer, mimeType, fileName);
+      console.log(`${logPrefix} saving cover (${(result.buffer.length / 1024).toFixed(0)}KB, ${result.mimeType})`);
+      await updateJournalCoverImage(journal.id, result.buffer, result.mimeType, fileName);
 
-      console.log(`${logPrefix} SUCCESS (candidate[${ci}/${candidates.length}])`);
+      console.log(`${logPrefix} SUCCESS (${tag}${usedUrl !== candidate.url ? " via thumbnail" : ""})`);
       task.progress.successCount++;
       return true;
-    } catch (dlErr: any) {
-      console.warn(`${logPrefix} candidate[${ci}/${candidates.length}] failed: ${dlErr?.message}, trying next...`);
+    } catch (saveErr: any) {
+      console.warn(`${logPrefix} ${tag} save failed: ${saveErr?.message}, trying next...`);
       continue;
     }
   }

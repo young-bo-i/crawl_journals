@@ -11,6 +11,24 @@ export const runtime = "nodejs";
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 const MAX_SIZE = 5 * 1024 * 1024; // 5MB
 
+/** 明确的非图片 Content-Type，遇到时直接拒绝 */
+const REJECT_CONTENT_TYPES = [
+  "text/html", "text/plain", "text/xml",
+  "application/json", "application/xml",
+  "application/xhtml+xml", "application/javascript", "text/css",
+];
+
+/** 通过文件魔数 (magic bytes) 检测真实图片类型 */
+function detectImageMime(buffer: Buffer): string | null {
+  if (buffer.length < 4) return null;
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return "image/png";
+  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38) return "image/gif";
+  if (buffer.length >= 12 && buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46
+      && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) return "image/webp";
+  return null;
+}
+
 // 获取封面图片
 export async function GET(_: Request, { params }: { params: Promise<{ issn: string }> }) {
   const { issn: idOrIssn } = await params;
@@ -90,19 +108,41 @@ export async function POST(req: Request, { params }: { params: Promise<{ issn: s
       }
       
       // 检测 MIME 类型
-      mimeType = imgRes.headers.get("content-type")?.split(";")[0]?.trim() ?? "image/jpeg";
-      if (!ALLOWED_TYPES.includes(mimeType)) {
-        // 尝试从 URL 推断
-        const ext = imageUrl.split("?")[0].split(".").pop()?.toLowerCase();
-        const extMap: Record<string, string> = {
-          jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
-          gif: "image/gif", webp: "image/webp",
-        };
-        mimeType = (ext && extMap[ext]) || "image/jpeg";
+      const serverMime = imgRes.headers.get("content-type")?.split(";")[0]?.trim() ?? "";
+      
+      // 严格拒绝非图片 Content-Type（如 text/html 网页）
+      if (REJECT_CONTENT_TYPES.some((t) => serverMime.startsWith(t))) {
+        return Response.json(
+          { error: `URL returned non-image content (Content-Type: ${serverMime})` },
+          { status: 400 }
+        );
       }
       
       const arrayBuffer = await imgRes.arrayBuffer();
       buffer = Buffer.from(arrayBuffer);
+      
+      // 用魔数检测真实图片类型
+      if (ALLOWED_TYPES.includes(serverMime)) {
+        mimeType = serverMime;
+      } else {
+        const detected = detectImageMime(buffer);
+        if (detected) {
+          mimeType = detected;
+        } else {
+          return Response.json(
+            { error: `URL does not point to a valid image (Content-Type: ${serverMime || "unknown"})` },
+            { status: 400 }
+          );
+        }
+      }
+      
+      // 二次魔数校验（确保实际内容是图片）
+      if (!detectImageMime(buffer)) {
+        return Response.json(
+          { error: "Downloaded content is not a valid image" },
+          { status: 400 }
+        );
+      }
       
       if (buffer.length > MAX_SIZE) {
         return Response.json(

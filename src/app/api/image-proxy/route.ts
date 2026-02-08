@@ -5,6 +5,24 @@ import { getDownloadProxy } from "@/app/api/image-search/route";
 
 export const runtime = "nodejs";
 
+/** 明确的非图片 Content-Type，遇到时直接拒绝 */
+const REJECT_CONTENT_TYPES = [
+  "text/html", "text/plain", "text/xml",
+  "application/json", "application/xml",
+  "application/xhtml+xml", "application/javascript", "text/css",
+];
+
+/** 通过文件魔数 (magic bytes) 检测真实图片类型 */
+function detectImageMime(buffer: Buffer | Uint8Array): string | null {
+  if (buffer.length < 4) return null;
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return "image/png";
+  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38) return "image/gif";
+  if (buffer.length >= 12 && buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46
+      && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) return "image/webp";
+  return null;
+}
+
 /**
  * GET /api/image-proxy?url=...
  *
@@ -85,9 +103,17 @@ export async function GET(req: Request) {
         return new Response(`Upstream returned ${buffer.status}`, { status: 502 });
       }
 
+      // 验证内容确实是图片
+      const proxyMime = buffer.contentType.split(";")[0]?.trim() || "";
+      if (REJECT_CONTENT_TYPES.some((t) => proxyMime.startsWith(t))) {
+        return new Response(`Upstream returned non-image content (${proxyMime})`, { status: 502 });
+      }
+      const detectedMime = detectImageMime(buffer.data);
+      const finalContentType = detectedMime || (proxyMime.startsWith("image/") ? proxyMime : "image/jpeg");
+
       return new Response(new Uint8Array(buffer.data), {
         headers: {
-          "Content-Type": buffer.contentType,
+          "Content-Type": finalContentType,
           "Cache-Control": "public, max-age=86400",
           "Access-Control-Allow-Origin": "*",
         },
@@ -100,12 +126,21 @@ export async function GET(req: Request) {
         return new Response(`Upstream returned ${res.status}`, { status: 502 });
       }
 
-      const contentType = res.headers.get("content-type") || "image/jpeg";
+      const contentType = (res.headers.get("content-type") || "").split(";")[0]?.trim() || "";
+
+      // 严格拒绝非图片 Content-Type
+      if (REJECT_CONTENT_TYPES.some((t) => contentType.startsWith(t))) {
+        return new Response(`Upstream returned non-image content (${contentType})`, { status: 502 });
+      }
+
       const arrayBuffer = await res.arrayBuffer();
+      const bufferView = new Uint8Array(arrayBuffer);
+      const detectedMime = detectImageMime(bufferView);
+      const finalContentType = detectedMime || (contentType.startsWith("image/") ? contentType : "image/jpeg");
 
       return new Response(arrayBuffer, {
         headers: {
-          "Content-Type": contentType,
+          "Content-Type": finalContentType,
           "Cache-Control": "public, max-age=86400",
           "Access-Control-Allow-Origin": "*",
         },
