@@ -621,10 +621,13 @@ async function tryDownloadCandidates(
       candidate.thumbnail !== candidate.url
     ) {
       try {
-        console.log(`${logPrefix} ${tag} falling back to thumbnail: ${candidate.thumbnail.substring(0, 100)}...`);
+        // Google gstatic.com 缩略图对代理 IP 限制严格，优先直连
+        const isGstatic = candidate.thumbnail.includes("gstatic.com");
+        const thumbProxy = isGstatic ? "" : proxyAddr;
+        console.log(`${logPrefix} ${tag} falling back to thumbnail${isGstatic ? " (direct, skip proxy for gstatic)" : ""}: ${candidate.thumbnail.substring(0, 100)}...`);
         result = await tryDownloadSingleUrl(
           candidate.thumbnail,
-          proxyAddr,
+          thumbProxy,
           `${tag}(thumbnail)`,
           logPrefix,
           THUMBNAIL_MIN_DIMENSION,

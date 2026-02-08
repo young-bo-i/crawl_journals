@@ -22,6 +22,7 @@ import {
   LayoutGrid,
   LayoutList,
   CloudDownload,
+  Trash2,
 } from "lucide-react";
 import { useWebSocket } from "@/lib/useWebSocket";
 import { Button } from "@/components/ui/button";
@@ -1268,32 +1269,64 @@ export default function JournalsTable() {
                         className="group border rounded-lg overflow-hidden bg-card hover:shadow-md transition-shadow"
                       >
                         {/* 封面区域 */}
-                        <button
-                          className="relative w-full aspect-[3/4] bg-muted flex items-center justify-center overflow-hidden cursor-pointer"
-                          onClick={() =>
-                            setExpandedCoverRowId(
-                              expandedCoverRowId === rowId ? null : rowId
-                            )
-                          }
-                          title={hasCover ? "点击搜索/更换封面" : "点击搜索封面图片"}
-                        >
-                          {hasCover ? (
-                            <>
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                src={`/api/journals/${rowId}/cover?v=${coverVersion}`}
-                                alt="封面"
-                                className="w-full h-full object-cover"
-                              />
-                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
-                            </>
-                          ) : (
-                            <div className="flex flex-col items-center gap-2 text-muted-foreground/40">
-                              <ImageIcon className="h-10 w-10" />
-                              <span className="text-xs">无封面</span>
-                            </div>
+                        <div className="relative w-full aspect-[3/4] bg-muted">
+                          <button
+                            className="w-full h-full flex items-center justify-center overflow-hidden cursor-pointer"
+                            onClick={() =>
+                              setExpandedCoverRowId(
+                                expandedCoverRowId === rowId ? null : rowId
+                              )
+                            }
+                            title={hasCover ? "点击搜索/更换封面" : "点击搜索封面图片"}
+                          >
+                            {hasCover ? (
+                              <>
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={`/api/journals/${rowId}/cover?v=${coverVersion}`}
+                                  alt="封面"
+                                  className="w-full h-full object-cover"
+                                />
+                                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
+                              </>
+                            ) : (
+                              <div className="flex flex-col items-center gap-2 text-muted-foreground/40">
+                                <ImageIcon className="h-10 w-10" />
+                                <span className="text-xs">无封面</span>
+                              </div>
+                            )}
+                          </button>
+                          {/* 删除封面按钮（悬停显示） */}
+                          {hasCover && (
+                            <button
+                              className="absolute top-1.5 right-1.5 z-10 rounded-full bg-black/50 hover:bg-red-600 text-white p-1 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                              title="删除封面"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                if (!confirm("确定要删除该期刊的封面图片吗？")) return;
+                                try {
+                                  const res = await fetch(`/api/journals/${rowId}/cover`, { method: "DELETE" });
+                                  if (res.ok) {
+                                    // 更新本地行数据
+                                    setRows((prev) =>
+                                      prev.map((r) =>
+                                        r.id === rowId ? { ...r, cover_image_name: null } : r
+                                      )
+                                    );
+                                    setCoverVersion((v) => v + 1);
+                                  } else {
+                                    const data = await res.json();
+                                    alert(data.error || "删除失败");
+                                  }
+                                } catch {
+                                  alert("网络错误，删除失败");
+                                }
+                              }}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
                           )}
-                        </button>
+                        </div>
 
                         {/* 信息区域 */}
                         <div className="p-3 space-y-1">

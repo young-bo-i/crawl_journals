@@ -1247,9 +1247,10 @@ export async function updateJournalCoverImage(
     const { cosKey, finalMimeType, finalFileName } = await uploadCover(journalId, image, mimeType);
 
     // 写入封面表（仅存 cos_key，不存 BLOB）
+    // 注意：image 列为 NOT NULL 且无默认值，INSERT 时必须显式传空值
     await execute(
-      `INSERT INTO journal_covers (journal_id, cos_key, image_type, image_name)
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO journal_covers (journal_id, cos_key, image, image_type, image_name)
+       VALUES (?, ?, '', ?, ?)
        ON DUPLICATE KEY UPDATE
          cos_key = VALUES(cos_key),
          image = '',
