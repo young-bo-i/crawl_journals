@@ -31,6 +31,7 @@
     "bottleneck": "^2.19.5",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "cos-nodejs-sdk-v5": "^2.15.4",
     "exceljs": "^4.4.0",
     "lucide-react": "^0.563.0",
     "mysql2": "^3.16.3",

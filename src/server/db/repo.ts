@@ -1239,12 +1239,37 @@ export async function updateJournalCoverImage(
   mimeType: string,
   fileName: string
 ): Promise<boolean> {
-  // 自动转换非 WebP 图片为 WebP 格式（节省约 40-60% 空间）
+  // 尝试上传到 COS（如果已配置）
+  const { isCosConfigured, uploadCover } = await import("@/server/cos/client");
+
+  if (isCosConfigured()) {
+    // ---- COS 模式：上传到对象存储，数据库只存 cos_key ----
+    const { cosKey, finalMimeType, finalFileName } = await uploadCover(journalId, image, mimeType);
+
+    // 写入封面表（仅存 cos_key，不存 BLOB）
+    await execute(
+      `INSERT INTO journal_covers (journal_id, cos_key, image_type, image_name)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         cos_key = VALUES(cos_key),
+         image = NULL,
+         image_type = VALUES(image_type),
+         image_name = VALUES(image_name)`,
+      [journalId, cosKey, finalMimeType, finalFileName]
+    );
+    // 同步更新 journals.cover_image_name（筛选索引需要）
+    const result = await execute(
+      `UPDATE journals SET cover_image_name = ?, updated_at = ? WHERE id = ?`,
+      [finalFileName, nowLocal(), journalId]
+    );
+    return result.affectedRows > 0;
+  }
+
+  // ---- 回退模式：COS 未配置，仍写入 BLOB（兼容旧部署） ----
   if (mimeType !== "image/webp") {
     try {
       const sharp = (await import("sharp")).default;
       const webpBuffer = await sharp(image).webp({ quality: 80 }).toBuffer();
-      // 只在转换后更小时替换（极少数情况下 WebP 可能更大）
       if (webpBuffer.length < image.length) {
         image = webpBuffer;
       }
@@ -1252,12 +1277,10 @@ export async function updateJournalCoverImage(
       fileName = fileName.replace(/\.(jpe?g|png|gif)$/i, ".webp");
       if (!fileName.endsWith(".webp")) fileName += ".webp";
     } catch (err) {
-      // 转换失败时保留原格式，不影响保存
       console.warn(`[cover] WebP conversion failed for ${journalId}, saving original format:`, (err as Error).message);
     }
   }
 
-  // 写入独立的封面表（INSERT 或 UPDATE）
   await execute(
     `INSERT INTO journal_covers (journal_id, image, image_type, image_name)
      VALUES (?, ?, ?, ?)
@@ -1267,7 +1290,6 @@ export async function updateJournalCoverImage(
        image_name = VALUES(image_name)`,
     [journalId, image, mimeType, fileName]
   );
-  // 同步更新 journals.cover_image_name（筛选索引需要）
   const result = await execute(
     `UPDATE journals SET cover_image_name = ?, updated_at = ? WHERE id = ?`,
     [fileName, nowLocal(), journalId]
@@ -1276,6 +1298,23 @@ export async function updateJournalCoverImage(
 }
 
 export async function deleteJournalCoverImage(journalId: string): Promise<boolean> {
+  // 如果有 cos_key，先从 COS 删除对象
+  const row = await queryOne<RowDataPacket>(
+    `SELECT cos_key FROM journal_covers WHERE journal_id = ?`,
+    [journalId]
+  );
+  if (row?.cos_key) {
+    try {
+      const { isCosConfigured, deleteCover } = await import("@/server/cos/client");
+      if (isCosConfigured()) {
+        await deleteCover(row.cos_key);
+      }
+    } catch (err) {
+      console.warn(`[cover] COS delete failed for ${journalId}:`, (err as Error).message);
+      // 不阻塞数据库删除
+    }
+  }
+
   // 从封面表删除
   await execute(
     `DELETE FROM journal_covers WHERE journal_id = ?`,
@@ -1291,14 +1330,26 @@ export async function deleteJournalCoverImage(journalId: string): Promise<boolea
 
 export async function getJournalCoverImage(
   journalId: string
-): Promise<{ image: Buffer; mimeType: string; fileName: string } | null> {
-  // 优先从独立封面表读取
+): Promise<{ image?: Buffer; cosUrl?: string; mimeType: string; fileName: string } | null> {
   const row = await queryOne<RowDataPacket>(
-    `SELECT image, image_type, image_name FROM journal_covers WHERE journal_id = ?`,
+    `SELECT cos_key, image, image_type, image_name FROM journal_covers WHERE journal_id = ?`,
     [journalId]
   );
 
-  if (!row?.image) return null;
+  if (!row) return null;
+
+  // 优先使用 COS URL
+  if (row.cos_key) {
+    const { getCoverUrl } = await import("@/server/cos/client");
+    return {
+      cosUrl: getCoverUrl(row.cos_key),
+      mimeType: row.image_type || "image/webp",
+      fileName: row.image_name || "cover.webp",
+    };
+  }
+
+  // 回退到 BLOB 数据（兼容未迁移的记录）
+  if (!row.image) return null;
 
   return {
     image: row.image,

@@ -40,6 +40,12 @@ services:
       - DOAJ_API_KEY=${DOAJ_API_KEY:-}
       - WIKIDATA_ENDPOINT=${WIKIDATA_ENDPOINT:-https://query.wikidata.org/sparql}
       - DEFAULT_TTL_HOURS=${DEFAULT_TTL_HOURS:-168}
+      - COS_SECRET_ID=${COS_SECRET_ID:-}
+      - COS_SECRET_KEY=${COS_SECRET_KEY:-}
+      - COS_BUCKET=${COS_BUCKET:-}
+      - COS_REGION=${COS_REGION:-}
+      - COS_DOMAIN=${COS_DOMAIN:-}
+      - COS_COVER_PREFIX=${COS_COVER_PREFIX:-covers}
     depends_on:
       mysql:
         condition: service_healthy

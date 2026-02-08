@@ -25,12 +25,24 @@ export async function GET(_: Request, { params }: { params: Promise<{ issn: stri
   if (!cover) {
     return Response.json({ error: "No cover image" }, { status: 404 });
   }
+
+  // COS 模式：302 重定向到 COS URL
+  if (cover.cosUrl) {
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: cover.cosUrl,
+        "Cache-Control": "public, max-age=86400", // 缓存 1 天
+      },
+    });
+  }
   
-  return new Response(new Uint8Array(cover.image), {
+  // 回退模式：从 BLOB 返回二进制数据（兼容未迁移的记录）
+  return new Response(new Uint8Array(cover.image!), {
     headers: {
       "Content-Type": cover.mimeType,
       "Content-Disposition": `inline; filename="${encodeURIComponent(cover.fileName)}"`,
-      "Cache-Control": "public, max-age=86400", // 缓存 1 天
+      "Cache-Control": "public, max-age=86400",
     },
   });
 }
