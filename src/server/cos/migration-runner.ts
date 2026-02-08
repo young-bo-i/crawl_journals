@@ -100,7 +100,7 @@ async function runMigration(task: CosMigrationTask) {
   try {
     // 统计待迁移总量
     const countRow = await queryOne<RowDataPacket>(
-      "SELECT COUNT(*) AS cnt FROM journal_covers WHERE cos_key IS NULL AND image IS NOT NULL"
+      "SELECT COUNT(*) AS cnt FROM journal_covers WHERE cos_key IS NULL AND LENGTH(image) > 0"
     );
     progress.total = Number(countRow?.cnt ?? 0);
 
@@ -116,7 +116,7 @@ async function runMigration(task: CosMigrationTask) {
     while (!task.stopRequested) {
       // 每批取一组待迁移的 ID
       const rows = await query<RowDataPacket[]>(
-        `SELECT journal_id FROM journal_covers WHERE cos_key IS NULL AND image IS NOT NULL LIMIT ?`,
+        `SELECT journal_id FROM journal_covers WHERE cos_key IS NULL AND LENGTH(image) > 0 LIMIT ?`,
         [BATCH_SIZE]
       );
       const ids: string[] = rows.map((r) => r.journal_id);
@@ -160,7 +160,7 @@ async function migrateOne(journalId: string, task: CosMigrationTask) {
   try {
     // 读取 BLOB 数据
     const row = await queryOne<RowDataPacket>(
-      "SELECT image, image_type, image_name FROM journal_covers WHERE journal_id = ? AND cos_key IS NULL AND image IS NOT NULL",
+      "SELECT image, image_type, image_name FROM journal_covers WHERE journal_id = ? AND cos_key IS NULL AND LENGTH(image) > 0",
       [journalId]
     );
 
@@ -180,9 +180,9 @@ async function migrateOne(journalId: string, task: CosMigrationTask) {
       mimeType
     );
 
-    // 上传成功 → 更新 cos_key，清空 BLOB
+    // 上传成功 → 更新 cos_key，清空 BLOB（置为空字节，避免 NOT NULL 约束）
     await execute(
-      "UPDATE journal_covers SET cos_key = ?, image = NULL, image_type = ?, image_name = ? WHERE journal_id = ?",
+      "UPDATE journal_covers SET cos_key = ?, image = '', image_type = ?, image_name = ? WHERE journal_id = ?",
       [cosKey, finalMimeType, finalFileName, journalId]
     );
 

@@ -85,7 +85,7 @@ async function main() {
 
   // 统计待迁移数量
   const [countRows] = await pool.execute(
-    "SELECT COUNT(*) AS cnt, ROUND(SUM(LENGTH(image))/1024/1024, 1) AS mb FROM journal_covers WHERE cos_key IS NULL AND image IS NOT NULL"
+    "SELECT COUNT(*) AS cnt, ROUND(SUM(LENGTH(image))/1024/1024, 1) AS mb FROM journal_covers WHERE cos_key IS NULL AND LENGTH(image) > 0"
   );
   const totalCount = Number(countRows[0].cnt);
   const totalMb = Number(countRows[0].mb || 0);
@@ -108,7 +108,7 @@ async function main() {
     const conn = await pool.getConnection();
     try {
       const [rows] = await conn.execute(
-        "SELECT image, image_type, image_name FROM journal_covers WHERE journal_id = ? AND cos_key IS NULL AND image IS NOT NULL",
+        "SELECT image, image_type, image_name FROM journal_covers WHERE journal_id = ? AND cos_key IS NULL AND LENGTH(image) > 0",
         [journalId]
       );
       if (rows.length === 0) return; // 已被其他进程迁移
@@ -143,7 +143,7 @@ async function main() {
 
       // 更新数据库：写入 cos_key，清空 BLOB
       await conn.execute(
-        "UPDATE journal_covers SET cos_key = ?, image = NULL, image_type = ?, image_name = ? WHERE journal_id = ?",
+        "UPDATE journal_covers SET cos_key = ?, image = '', image_type = ?, image_name = ? WHERE journal_id = ?",
         [cosKey, mimeType, fileName, journalId]
       );
 
@@ -173,7 +173,7 @@ async function main() {
   // 分批取 ID，并发处理
   while (true) {
     const [ids] = await pool.query(
-      `SELECT journal_id FROM journal_covers WHERE cos_key IS NULL AND image IS NOT NULL LIMIT ${BATCH_SIZE}`
+      `SELECT journal_id FROM journal_covers WHERE cos_key IS NULL AND LENGTH(image) > 0 LIMIT ${BATCH_SIZE}`
     );
     if (ids.length === 0) break;
 
@@ -197,7 +197,7 @@ async function main() {
 
   // 检查剩余未迁移的
   const [remaining] = await pool.execute(
-    "SELECT COUNT(*) AS cnt FROM journal_covers WHERE cos_key IS NULL AND image IS NOT NULL"
+    "SELECT COUNT(*) AS cnt FROM journal_covers WHERE cos_key IS NULL AND LENGTH(image) > 0"
   );
   const remainCount = Number(remaining[0].cnt);
   if (remainCount > 0) {

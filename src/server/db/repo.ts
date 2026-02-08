@@ -1252,7 +1252,7 @@ export async function updateJournalCoverImage(
        VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          cos_key = VALUES(cos_key),
-         image = NULL,
+         image = '',
          image_type = VALUES(image_type),
          image_name = VALUES(image_name)`,
       [journalId, cosKey, finalMimeType, finalFileName]
@@ -1348,8 +1348,8 @@ export async function getJournalCoverImage(
     };
   }
 
-  // 回退到 BLOB 数据（兼容未迁移的记录）
-  if (!row.image) return null;
+  // 回退到 BLOB 数据（兼容未迁移的记录，空字节视为无图片）
+  if (!row.image || row.image.length === 0) return null;
 
   return {
     image: row.image,
